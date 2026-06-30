@@ -19,6 +19,8 @@ SaaS——安全采用纵深防御（组织内用户隔离、沙盒、误用护�
 
 - 🧰 **Skills 与 MCP**——一键启用/停用策展的 Skills 与 MCP 服务器；实时加载进 Agent 会话，
   无需重启。
+- 👥 **Projects 与 branch-on-reply**——在项目内共享会话给成员；非 owner 回复会 fork 出新的分支会话，
+  原始会话保持只读且归属清晰。
 - 🎨 **Artifacts + 实时预览沙盒**——生成网页 / 文档 / React / SVG，并在每会话独立的沙盒容器里
   以独立子域名运行多文件 Web 应用。
 - 🐍 **沙盒代码执行**——每会话隔离的运行时，用于代码、数据分析、自动化。
@@ -115,7 +117,7 @@ Browser ──WebSocket /ws/agent──▶ ws-server.mjs ──按会话 spawn�
 - **Sidecar。** 一个 `parser` sidecar（PDF→Markdown，供 RAG 用）和一个 `updater` sidecar
   （在线自动更新）让应用镜像保持精简。
 
-单入口对话位于 **`/agents/c`**（散会话）与 **`/agents/projects/*`**（项目级）。其它界面：
+单入口对话位于 **`/agents/c`**（散会话）与 **`/agents/projects/*`**（项目级，支持成员共享与 branch-on-reply）。其它界面：
 `documents`（知识库）、`skills`、`mcp`、`ocr`、`capabilities`、`settings`。
 
 ## 技术栈

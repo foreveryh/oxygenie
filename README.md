@@ -20,6 +20,8 @@ against the open internet.
 
 - 🧰 **Skills & MCP** — one-click enable/disable of curated skills and MCP servers; loaded
   into agent sessions live, no restart.
+- 👥 **Projects & branch-on-reply** — share sessions with project members; non-owner replies
+  fork the conversation so the original stays read-only and attributed.
 - 🎨 **Artifacts + live preview sandbox** — generate web pages / docs / React / SVG, and run
   multi-file web apps in a per-session sandbox container on their own subdomain.
 - 🐍 **Sandboxed code execution** — isolated per-session runtime for code, data analysis,
@@ -132,8 +134,7 @@ Browser ──WebSocket /ws/agent──▶ ws-server.mjs ──spawn per session
   auto-update) keep the app image slim.
 
 Single-entry chat lives at **`/agents/c`** (loose sessions) and **`/agents/projects/*`**
-(project-scoped). Other surfaces: `documents` (knowledge base), `skills`, `mcp`, `ocr`,
-`capabilities`, `settings`.
+(project-scoped, with member sharing and branch-on-reply). Other surfaces: `documents` (knowledge base), `skills`, `mcp`, `ocr`, `capabilities`, `settings`.
 
 ## Tech stack
 
