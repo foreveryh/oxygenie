@@ -18,8 +18,7 @@ against the open internet.
 
 ## Highlights
 
-- 🧰 **Skills & MCP** — one-click enable/disable of curated skills and MCP servers; loaded
-  into agent sessions live, no restart.
+- 🧰 **Skills & MCP** — one-click enable/disable of curated skills and MCP servers; toggles take effect on the next new conversation (the current SDK session does not hot-reload them).
 - 👥 **Projects & branch-on-reply** — share sessions with project members; non-owner replies
   fork the conversation so the original stays read-only and attributed.
 - 🎨 **Artifacts + live preview sandbox** — generate web pages / docs / React / SVG, and run
@@ -27,7 +26,9 @@ against the open internet.
 - 🐍 **Sandboxed code execution** — isolated per-session runtime for code, data analysis,
   automation.
 - 📚 **Document knowledge base (RAG)** — upload PDFs/docs, parsed and embedded into a
-  searchable knowledge base scoped per conversation; citations are clickable.
+  searchable knowledge base scoped by project or user; sessions can narrow retrieval to
+  selected knowledge bases. Citations are preserved for the model. (RAG is off by default;
+  set `RAG_ENABLED=true` and deploy the parser sidecar.)
 - 🔀 **Concurrent sessions / background-continue** — a running conversation keeps going in
   the background while you start another; running sessions are marked in the sidebar
   (ChatGPT/Claude-style).
