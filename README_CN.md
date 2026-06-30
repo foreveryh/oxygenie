@@ -164,10 +164,7 @@ PER_USER_MAX_WORKERS=3      # 每用户并发运行会话数
 
 ## 容量与并发
 
-每个对话回合跑在一个隔离的 worker 里（活跃时约 150–300 MB）。消耗资源的是**同时执行**的 worker
-数量，而非打开的会话数。Kin 用**全局 worker 信号量**和**按用户上限**
-（`PER_USER_MAX_WORKERS`，默认 3）来约束它；超额的运行进入队列。一台 **16 GB / 8 核**主机能
-从容服务一个小团队。详见 **[docs/deployment/sizing.md](docs/deployment/sizing.md)**。
+每个对话回合跑在一个隔离的 worker 里（**活跃时约 0.5–0.6 GB**，实测；Node 堆在大型生成时可能增长到 1.5 GB 上限）。消耗资源的是**同时执行**的 worker 数量，而非打开的会话数。Kin 用**全局 worker 信号量**（默认 8）和**按用户上限**（`PER_USER_MAX_WORKERS`，默认 3）来约束它；超额的运行进入队列。一次负载测试显示 **8 个并发 worker 峰值约 5 GB**，并干净回到空闲（无泄漏），所以一台 **16 GB / 8 核**主机能从容服务一个小团队。详见 **[docs/deployment/sizing.md](docs/deployment/sizing.md)**。
 
 ## 开发
 
