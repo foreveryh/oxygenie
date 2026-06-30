@@ -1,66 +1,59 @@
 ---
-title: "设计篇 02：长期记忆 —— 两层记忆、LLM 驱动更新、注入 system prompt"
+title: "长期记忆 — 两层结构、LLM 驱动的更新与系统提示注入"
 slug: d2-long-term-memory
 date: 2026-06-07
-series: oxygenie-agent-harness
-series_track: design
-series_index: 21
-keywords: [长期记忆, memory, 两层记忆, LLM 记忆更新, system prompt 注入]
-prev: d1-advanced-rag
-next: d3-context-engineering
+keywords: [长期记忆, memory, 双层记忆, LLM 记忆更新, 系统提示注入]
 ---
 
-# 设计篇 02：长期记忆 —— 两层记忆、LLM 驱动更新、注入 system prompt
+# 长期记忆 — 两层结构、LLM 驱动的更新与系统提示注入
 
-> RAG（设计篇 01）解决"查外部资料"，长期记忆解决"记住你"。按 baby-agent 第六章 + HarWork 第 06 篇倒推：oxygenie **该有、却没有**一套跨会话的记忆——会话一重启，Agent 就"失忆"。
+RAG 给 agent 访问外部文档的能力。长期记忆给 agent 访问关于用户和项目跨会话事实的能力。本课描述 Kin 尚未实现的一个记忆系统的设计。
 
-> 📐 **设计篇**：现状有据，设计为"该有的"，未实现。
+## 状态
 
-## 问题陈述
+仅设计，未实现。
 
-用户希望 Agent 记住偏好、项目背景、上次结论，跨会话保持连贯，而不是每次从零自我介绍。难点：记忆既不能把全部历史塞回 prompt（撑爆上下文），也不能靠 SDK 的会话 resume（那只恢复单条 transcript，不跨会话蒸馏）。
+## 问题
 
-## oxygenie 现状
+用户期望 agent 记住偏好、项目背景以及之前对话的结论。会话重启时，agent 不应该需要重新被介绍。挑战在于记忆不能通过把完整 transcript 历史塞回 prompt 来实现；上下文窗口有限，且大部分历史是噪声。
 
-- **无 auto-memory**：grep `memory` 仅得会话持久化（第 12 篇），**没有**按用户的记忆表/文件。
-- `knowledge_base` 是**共享文档库**，不是"用户记忆"——它存资料，不存"关于这个用户的事实"。
-- CLAUDE.md 提到 `settingSources:['project']` 会加载 `.claude/`，但**没有自动写记忆**的环节。
-- 结论：记忆 = SDK transcript 的单会话恢复，**跨会话归零**。
+## 为什么朴素方案失败
 
-## 朴素方案为什么不行
+- **把所有历史喂进 prompt**：上下文窗口溢出，噪声淹没信号。
+- **只依赖 SDK resume**：transcript resume 恢复单一会话，而不是提炼的跨会话画像。
+- **让用户手动维护记忆文件**：用户不会这样做，记忆也会偏离对话。
 
-- **把全部历史塞回 prompt**：上下文秒爆，且大部分是噪音。
-- **只靠 SDK resume**：只恢复"这一条会话"，不会把"用户是谁、在做什么项目"蒸馏成可复用的记忆。
-- **让用户手填记忆**：没人会维护，且与对话脱节。
+## 设计
 
-## 核心方案：两层记忆 + LLM 蒸馏 + 注入
+> **两层记忆，由便宜的后台 LLM 任务更新，并在每次 `query()` 调用时注入系统提示。**
 
-- **两层**：**全局/用户层**（跨所有会话的稳定事实：身份、偏好、长期项目）+ **工作区/会话层**（当前任务的近期上下文）。读时合并，写时分层。
-- **LLM 驱动更新**：用便宜的 haiku 档模型（`doubao-seed-2.0-lite`，第 14 篇）在**后台 BullMQ job** 里从对话里抽取"值得记的事实"，增量更新记忆，不阻塞主对话。
-- **注入 system prompt**：每次 `query()` 把记忆作为 system prompt 前缀注入——复用 `ws-query-worker.mjs` 注入 skill context 的同一个口子（第 08 篇）。
-- **落点（复用已有 FS-as-truth 模式）**：记忆存进 per-user `~/.claude/`（与 MCP/Skills 的 FS 启用同构，第 07/08 篇），或新增一张 `user_memory` 表；更新走 BullMQ。
+- **全局 / 用户层**：跨所有会话稳定的事实——身份、偏好、长期项目。
+- **工作区 / 会话层**：当前任务的近期上下文。
+- **LLM 驱动更新**：便宜模型（例如 `doubao-seed-2.0-lite`）在每轮对话后于后台 BullMQ 任务中运行，提取值得记住的事实，并增量更新记忆存储。
+- **注入**：两层合并后 prepend 到系统提示，复用 Skill 上下文的注入路径。
+- **存储**：记忆可以作为 `~/.claude/` 下的每用户文件系统 JSON（与 MCP 和 Skills 启用模式一致），或存入专用 `user_memory` 表。
 
 ## 反直觉结论
 
-> [!IMPORTANT]
-> **记忆是个"写"的问题，不是"读"的问题。** 注入很简单（拼进 system prompt），难的是**决定写什么**——从一长段对话里蒸馏出"这条值得跨会话记住"。所以记忆系统的核心不是存储，是那个在后台默默判断"什么该记、什么该忘"的 LLM 更新器。这和设计篇 01 的 RAG 同源：**真正的工程在离线那条链上**（RAG 在 embed，记忆在蒸馏）。
+> **记忆是写的问题，不是读的问题。**
 
-## 三个生产坑
+读记忆很容易：把它拼进系统提示。难的是决定写什么——把长对话蒸馏成一小跨会话仍有价值的事实。核心工程是后台 LLM 更新器，它判断“这个值得记住”和“这个旧事实已经过时”。
 
-> [!WARNING]
-> **坑一**：记忆更新若同步跑会拖慢对话——必须后台 job，最终一致即可。
-> **坑二**：两层记忆的优先级要定清楚——会话层与用户层冲突时谁覆盖谁，否则 Agent 行为漂移。
-> **坑三**：记忆是 PII 重灾区，写入/注入都要过脱敏与隔离（呼应设计篇 05 Guardrails、第 17 篇审计）。
+## 生产坑
+
+- **记忆更新必须是异步的**。同步运行会拖慢每一轮。
+- **必须定义层级优先级**。如果工作区级记忆与用户级记忆冲突，agent 行为会漂移。
+- **记忆是 PII 表面**。写入和注入必须被清洗和隔离，与审计和护栏实践一致。
+
+## 相关 Kin 文档
+
+- `zh/08-skills-system.md` — 记忆可复用的 Skill 上下文注入路径
+- `zh/07-mcp-capability-center.md` — 每用户文件系统配置模式
+- `zh/12-session-persistence.md` — 会话 transcript 持久化，不是记忆
+- `zh/d5-guardrails.md` — PII 与内容护栏
+- `zh/d3-context-engineering.md` — 记忆如何与上下文预算交互
 
 ## 配图
 
-1. ![两层记忆：全局/用户 + 工作区/会话](../assets/img/d2-two-layer-memory.svg)
-2. ![后台 LLM 蒸馏 → 注入 system prompt](../assets/img/d2-memory-update.svg)
-
-## 下一篇
-
-→ [设计篇 03：上下文工程](./d3-context-engineering.md)
-
----
-
-📌 [reading-map.md](../reading-map.md) · 📐 设计篇，未实现。
+1. `docs/blog/assets/img/d2-two-layer-memory.svg` — 全局/用户层 + 工作区/会话层
+2. `docs/blog/assets/img/d2-memory-update.svg` — 后台 LLM 蒸馏 → 系统提示注入

@@ -1,4 +1,4 @@
-# OxyGenie — Roadmap
+# Kin — Roadmap
 
 Phased plan from foundation to surpassing Deep Agents. Each phase lists its goal
 and **exit criteria**. Track live progress in [`STATUS.md`](./STATUS.md).
@@ -9,31 +9,31 @@ and **exit criteria**. Track live progress in [`STATUS.md`](./STATUS.md).
 
 ---
 
-## 🧭 Current focus — Now / Next / Later (set 2026-06-06)
+## 🧭 Current focus — Now / Next / Later (set 2026-06-30)
 
-The phase plan below (0 → 4 + Skills) is largely delivered. This is the **live, ordered**
-plan for what's left. Owner-set: **Now = Slimming only.**
+The phase plan below (0 → 4 + Skills) is largely delivered. **MVP multi-model selection is now Done.**
+Owner-set: **Now = Polish + CI health + documentation maintenance.**
 
-### 🟢 NOW — Slimming & open-source CI — ✅ mostly done (2026-06-06)
-**Goal:** drop the heavyweight bits so the project builds on free CI and ships lean.
-- [x] **Remove Mastra entirely** — `src/mastra/**`, deps (`@mastra/*` + `ai` + `@ai-sdk/*`),
-      routes (`api/chat`, `api/threads/**`, `api/workflow/**`, `agents/ai-chat`, `agents/ai-workflow`),
-      the AI-SDK chat UI + `ai-elements/**`, `mastra-thread` schema, every UI surface (sidebar/menu/
-      homepage), and the dual-SDK docs. *(PR #109)*
-- [x] **Remove playwright + libreoffice permanently** — Dockerfile install blocks + the
-      `INSTALL_BROWSER`/`INSTALL_OFFICE` ARGs + the `playwright` dep + the render-png route/UI. The
-      lean image is now the only image. *(PR #110)*
+### 🟢 NOW — Polish, CI health, and documentation cleanup
+**Goal:** close the remaining loose ends after the major feature waves (Phase C, multi-model, Workbench, OCR) so the project is consistent and maintainable.
 - [~] **Re-enable free CI build** — **build OOM is FIXED**: `build.yml` (7 GB runner) now builds the
       slim image to completion (verified on the #110 main run — no OOM). It currently fails only at the
       GHCR **push** (`denied: write_package`) because the `oxygenie/app` package was created manually
       and has **no linked repo**. One-time fix: package → *Manage Actions access* → add `foreveryh/oxygenie`
       (Write), then re-run build.yml. After that, push-main auto-publish is green.
+- [~] **TS-ify the agent runtime** — `ws-server.mjs` / `ws-query-worker.mjs` remain plain `.mjs`;
+      typed WebSocket protocol is still deferred. This is a prerequisite for safely adding more harness features.
+- [ ] **Fix remaining TypeScript errors** → re-enable `typecheck` as a hard gate.
+- [ ] **Make tests CI-runnable** (split unit vs e2e; provision Postgres/services) → re-enable `test` as a hard gate.
+- [ ] **Migrate 15 REST routes → Server Functions** → re-enable `validate-routes` as a hard gate.
+- [ ] **Blog/lessons maintenance** — rewrite the `docs/blog/zh/` series as self-contained lessons,
+      remove internal cross-references and "next/prev" links, and update stale status descriptions
+      (especially Workbench, preview, multi-model, and RAG).
 
-**Exit:** SSR build completes under the CI runner's RAM ✅; GHCR auto-publish green (pending the
-one-time package→repo link); zero Mastra references ✅.
+**Exit:** CI gates are green and meaningful; docs reflect the current state of the code.
 
-### 🔵 NEXT — Deployment completeness + capability lists
-- [x] **🎯 Multi-model selection — DONE (2026-06-07)** — users pick the model per conversation,
+### 🔵 NEXT — Capabilities and scale maturity
+- [x] **🎯 Multi-model selection (MVP) — DONE (2026-06-07)** — users pick the model per conversation,
       across connections/accounts (any Anthropic-protocol gateway), only among currently-healthy ones.
       Shipped: DB registry (`model_connection`/`model_definition`/`model_health`) seeded from
       `OXY_MODELS_SEED` (+ legacy `ANTHROPIC_*` fallback); **6h health probe** (BullMQ, + probe-on-boot)
@@ -42,7 +42,7 @@ one-time package→repo link); zero Mastra references ✅.
       **+ CRUD**; per-conversation memory (localStorage). Secrets stay in env (tokenEnv name only).
       Verified: ARK serves GLM-5.1 / Doubao-Seed-2.0-Code/-Pro / MiniMax behind one endpoint (all 200).
       *(PRs #126/#127/#129/#130/#131/#132/#133/#134/#136/#137)* Spec: `prd/2026-06-multi-model-switching-prd.md`.
-      Later (Phase 4): `fallbackModel` failover, capability-gating, cross-device (DB) model persistence.
+      **Remaining (Phase 4 stretch):** cross-provider routing/failover, capability-gating, cross-device (DB) model persistence.
 - [x] **Agent code sandbox** — fixed the registration sequencing bug (eager `ensureSandbox()`
       before the check; `state=null` → bash never registered). Verified live (srt active). *(PR #112)*
 - [x] **Path A completeness** — **`docker-compose.prod.yml`**: bundled Traefik + websecure/TLS + the
@@ -55,19 +55,30 @@ one-time package→repo link); zero Mastra references ✅.
       forward-auth, userns/bwrap OK — this VM run is what caught the shim bug. *(PR #113/#114)*
       **Residual**: LE DNS-01 wildcard issuance not yet exercised against real public DNS (the VM used
       a local-only domain; config is shared with the proven CF/Origin-CA stacks). Guide: `docs/deployment/docker-compose.md`.
+- [x] **OCR module** — end-to-end scanned-document OCR: lazy thumbnail navigation, page state badges,
+      parse/render timeouts for large PDFs (2.4 MB annual reports), reopen restoring original files and full page set,
+      explicit error backflow. Shipped to `/agents/ocr`. *(PRs #158–#163)*
+- [x] **Workbench hardening** — Files panel reads real workspace FS, `info` → Context integration,
+      Progress/Sub-agents auto-populate the correct tabs, collapsible side rails (session history + workbench),
+      unified session-file button controlling the right panel. *(PRs #153/#154/#155/#156/#157)*
+- [x] **Permission visualization + Bash capability convergence** — `/admin/permissions` board,
+      runtime capability config stored and wired, `allowBash` decoupled from `permissionMode`, native `Bash`
+      permanently disallowed, controlled `mcp__bash__run` closed-loop. *(PRs #148/#149/#150/#151)*
+- [x] **Upload pipeline + chat switch fixes** — attachment delivery via stable side-channel, upload format
+      allowlist, pause/resume, white-screen fix when switching conversations. *(PRs #138/#139/#144/#145)*
 - **Skills / MCP curation ("lists")** — content refresh (skills-api `scrapedAt`/ETag), admin
-  curation UI for the official catalog, an **MCP catalog/picker**, and fix the stale "coming soon" copy.
+  curation UI for the official catalog, an **MCP catalog/picker**, and fix any stale "coming soon" copy.
 
-### 🟣 LATER — gates, accounting, polish
-- **Multi-model** — **promoted to NEXT (2026-06-07)** — see the NEXT item +
-  `research/2026-06-multi-model-support-research.md`. Phase 4 *stretch* remains: cross-provider
-  routing/**failover** + per-capability key split + capability gating (e.g. vision-only models).
-- **CI hard gates** (Phase 0 remainder) — typecheck, validate-routes (29 REST routes), test
-  (Postgres service container); TS-ify `ws-server.mjs`/`ws-query-worker.mjs` + typed WS protocol.
-- **Accounting** (Phase 2 wiring) — call `spendOneCredit`, persist per-run cost/tokens, enable the
+### 🟣 LATER — Gates, accounting, and architectural debt
+- **Multi-model Phase 4** — cross-provider routing/**failover** + per-capability key split + capability gating (e.g. vision-only models) + cross-device model persistence.
+- **Accounting (Phase 2 wiring)** — call `spendOneCredit`, persist per-run cost/tokens, enable the
   audit log, stop logging raw message content (PII).
-- **Misc** — revisit `ENABLE_STRUCTURED_OUTPUTS` now Phase C is done; email-verify self-host UX;
-  P16 artifact version recording (paused); deprecated-fn cleanup (`syncOldUserSkills`, `getSkillStatus`).
+- **Workspace as a first-class concept** — decouple Workspace from Conversation; stable absolute paths.
+- **Conversation history in our own DB** — make Postgres the source of truth for messages; SDK transcript becomes resume input.
+- **Context management / memory layer** — summarization, compaction, and long-term memory (design docs D2/D3).
+- **Unify per-message worker and per-session preview runtime** — shared lifecycle and warm workspace pool.
+- **Revisit `ENABLE_STRUCTURED_OUTPUTS`** now that Phase C is done; resolve the StructuredOutput-leak root cause instead of keeping the flag forced-off.
+- **Misc** — email-verify self-host UX; P16 artifact version recording (paused); deprecated-fn cleanup (`syncOldUserSkills`, `getSkillStatus`).
 
 ---
 
@@ -273,12 +284,14 @@ admin governance, build+lint green, owner-tested). Maintenance items above are t
 
 ---
 
-## Phase 4 — Multi-model & scale maturity
+## Phase 4 — Multi-model MVP ✅ + scale maturity (stretch)
 
 **Goal:** real provider abstraction and horizontal scale.
 
-- [ ] Model registry / capability catalog / provider routing + failover.
-- [ ] Split shared credentials per capability (remove single-key blast radius).
-- [ ] Concurrency caps / backpressure / horizontal scale story for ws-server.
+- [x] **MVP multi-model selection** — per-conversation model picker, health probes, DB registry,
+      `/admin/models` CRUD, per-request worker-env routing. *(Done 2026-06-07, PRs #126–#137)*.
+- [ ] **Cross-provider failover and capability gating** — route/failover across multiple Anthropic-compatible gateways;
+      split shared credentials per capability; gate models by capability (vision, long-context, etc.).
+- [ ] **Concurrency caps / backpressure / horizontal scale story for ws-server** — beyond single-host 50 sessions.
 
 **Exit criteria:** swap/route models without code changes; bounded resource use under load.

@@ -1,141 +1,127 @@
-# OxyGenie Agent Harness 系列 · 阅读地图 / Reading Map
+# Kin 课程索引
 
-> **正传 19 篇（现状）+ 设计篇 6 篇（该有的）· 双语 · 一套自托管、多租户、可计费、可上线的 Web Agent Harness 的工程拆解**
+> 一套自包含的 Kin 工程拆解课程。Kin 是一个基于 Claude Agent SDK 的自托管、单组织、多用户 Agent harness。每节课相互独立，可按任意顺序阅读。
 >
-> **两条线，分清"现状"与"该有的"**：**正传 01–19** 写 OxyGenie **已有的**（每篇都有 `文件:行号` 为证）；**设计篇 D1–D6** 写按 references（baby-agent 的 RAG/记忆/Guardrails/评测章、HarWork 的上下文章）倒推出来、OxyGenie **该有却还没有**的能力。完整的 harness ≠ 只写已有的——所以这套地图把"缺口"也画进来。
+> **范围**：课程 01–20 覆盖当前已实现系统。课程 D1–D6 覆盖设计工作，其中部分已落地。
 >
-> ✅ **2026-06-13 进展**：设计篇已不全是"未实现"。**D1 RAG 整条落地上生产（#153–#182），并连带做出 D4 评测 / D5 Guardrails / D6 可观测的"检索那一刀"**——这四篇均加了 [实现回填] 段（真实 `文件:行号` + 设计 vs 现实的打脸/修正）。D2 记忆、D3 上下文仍为纯设计。
->
-> 蓝本：[building-an-agent-harness](https://github.com/sky54laozhu/building-an-agent-harness)（HarWork）、[baby-agent](https://github.com/baby-llm/baby-agent)（Agentic RAG / 记忆 / Guardrails / 评测）。
-> 但 OxyGenie 走了一条**不同的路**——HarWork 自己手写了 640 行的 Agent Loop；
-> **OxyGenie 不写 Loop**，它包住官方 **Claude Agent SDK**，把工程全花在"让 SDK 在多租户、沙箱、断流、计费、上线场景下不崩"。
-> 这套系列就是把这层"包"一层层摊开。
->
-> **代码引用基准**：全系列所有 `文件:行号`（如 `ws-server.mjs:1125`、`permission-tier.js:26`）对应 OxyGenie `main` 分支 2026-06-07 的快照；代码持续演进后行号可能漂移几行，以该快照为准。
+> **代码快照**：Kin `main` 分支，2026-06-30。行号会随代码演进漂移；请以引用的文件路径为准。
 
 ---
 
-## 一句话定位 · One-line positioning
+## 一句话定位
 
-**OxyGenie**：面向中小团队的、可私有化部署的、可扩展的 AI Agent 平台——基于 **Claude Agent SDK 0.2.112**（钉死以兼容 ARK 多模型网关）+ **TanStack Start**，用 Skills Store、MCP、Artifacts、Python 执行、**真预览** 替代通用 GPT 产品，单机 16GB/8 核目标 **~50 并发会话**。
-
----
-
-## 中文版 · 推荐阅读顺序
-
-| 板块 | 篇 | 标题 | 一句话 |
-|------|----|------|--------|
-| **立论** | 01 | [什么是 Agent Harness](zh/01-what-is-agent-harness.md) | SDK 已经给了 Loop，你还要造的那 15 层 |
-| | 02 | [OxyGenie 技术栈全景](zh/02-oxygenie-stack-overview.md) | 双进程（ws-server + worker）/ SDK 0.2.112 / ARK |
-| **执行内核** | 03 | [Per-Message Worker 模型](zh/03-per-message-worker-model.md) 🌟 | 为什么"每条消息 spawn 一个子进程"而不是常驻 Loop |
-| | 04 | [流式协议](zh/04-streaming-protocol.md) | seq 编号 NDJSON 帧 + stdin/stdout 双工 + 背压 |
-| | 05 | [ExecutionRuntime 双后端](zh/05-execution-runtime.md) | local-process / per-session Docker，FAIL-CLOSED |
-| **工具扩展** | 06 | [工具系统](zh/06-tool-system.md) | SDK preset `claude_code` + 自定义 MCP 工具 |
-| | 07 | [MCP 能力中心](zh/07-mcp-capability-center.md) | 7 个内置 MCP + 按用户 FS 启用 + 凭据/覆写 |
-| | 08 | [Skills 系统](zh/08-skills-system.md) | copy-on-enable + LLM 生成表单 schema + disabled veto |
-| **沙箱权限** | 09 | [Ask/Act 两模式 + HITL](zh/09-ask-act-hitl.md) | canUseTool → approval_request → stdin 回灌 |
-| | 10 | [Bash 沙箱](zh/10-bash-sandbox.md) | srt FAIL-CLOSED + prlimit + secret 永远剥离 |
-| | 11 | [多租户隔离](zh/11-multi-tenant-isolation.md) | per-session workspace + path guard + 9 系统前缀封锁 |
-| **会话并发** | 12 | [会话持久化](zh/12-session-persistence.md) | SDK transcript 为真相 + DB 13 表为索引 + resume 坑 |
-| | 13 | [单机 50 并发](zh/13-single-host-concurrency.md) | semaphore(max 8) + worker heap cap + idle reaper |
-| | 14 | [多模型路由](zh/14-multi-model-routing.md) | ARK 网关 + 为什么钉死 SDK 0.2.112 |
-| **产物预览** | 15 | [真预览](zh/15-real-preview.md) 🌟 | per-session Docker + Traefik 子域 + bootstrap JWT |
-| | 16 | [Artifact 检测与会话 UI/Workbench](zh/16-artifacts-and-workbench.md) | 启发式检测 / 为什么关掉 structured outputs / seq 排序 |
-| **计费上线** | 17 | [计费与可观测](zh/17-billing-and-observability.md) | usage_record 观测 / costUsd 为什么不扣费 / PostHog+Sentry+审计 |
-| | 18 | [Dokploy 上线](zh/18-dokploy-deploy.md) | 多阶段 Docker + GHCR + Traefik + Cloudflare Origin CA |
-| **复盘** | 19 | [复盘](zh/19-retrospective.md) | 从 starter 到生产：做对 / 做错 / 反悔 |
-
-🌟 = 旗舰篇（中英双语全文）。正传 01–19 **均为完整全文**（问题 → 朴素方案 → 核心方案 → `文件:行号` → 反直觉 → 三个生产坑 → 配图 → 下一篇）。
-
-### 设计篇 · 该有的（现状 → 设计） 📐
-
-> 正传写"已有的"，设计篇写"完整 harness 该有、却还没有的"。每篇结构：**问题 → oxygenie 现状（有 `文件:行号` 为证）→ 朴素方案为什么不行 → 核心方案（该有的设计）→ 落点（复用哪些已有原语）→ 反直觉 → 生产坑**。
->
-> ✅ **2026-06-13 更新**：设计篇不再全是"未实现"了。**做 RAG（D1）整条落地时，连带把 D4 评测 / D5 Guardrails / D6 可观测的"检索那一刀"也做了**——这四篇都已加 [实现回填] 段（真实 `文件:行号` + 设计 vs 现实的"打脸/修正"）。D2 记忆 / D3 上下文仍是纯设计。下表"状态"列标了最新进度。
-
-| 设计篇 | 标题 | 状态 | 现状一句话 → 落地了什么 |
-|--------|------|-----------|-------------|
-| **D1** | [Advanced / Agentic RAG](zh/d1-advanced-rag.md) | ✅ **全落地** | 离线 embed 进 pgvector + 向量∥BM25 混合 + 检索做成 Agent 自调 MCP 工具，**整条上生产（#153–#182）**；设计预言对一半、打脸五处 + 一个"最后一公里" |
-| **D2** | [长期记忆](zh/d2-long-term-memory.md) 📐 | ⬜ 纯设计 | 无 auto-memory；两层记忆 + LLM 蒸馏 + 注入 system prompt，**仍未实现** |
-| **D3** | [上下文工程](zh/d3-context-engineering.md) 📐 | ⬜ 纯设计 | 渐进压缩 + 卸载到 `message_attachment`（表已存在）+ 预算前置，**仍未实现** |
-| **D4** | [评测](zh/d4-evaluation.md) | 🟡 **半落地** | ✅ 检索层黄金集（按腿分型）+ 分层指标 + 消融，**驱动 rerank 反悔**；❌ 生成层指标 + CI 门禁仍设计 |
-| **D5** | [Guardrails](zh/d5-guardrails.md) | 🟡 **半落地** | ✅ 检索注入护栏（"文档=数据"信封，适度护栏）；❌ 输出 PII / 内容护栏仍设计 |
-| **D6** | [Agent / RAG 可观测](zh/d6-agent-tracing.md) | 🟡 **半落地** | ✅ 检索 trace（专用 `rag_search_trace` 表，**修正了"导 seq 流"的结论**）；❌ Agent 级 step/span trace 仍设计 |
-
-📐 = 仍为纯设计 · ✅/🟡 = 全/半落地（带 [实现回填] 段）。设计篇的共同发现仍成立：**该有的零件大多已躺在代码里，缺的是接线**——但 RAG 这一轮也补了一条反向教训：**当关键数据从不流经已有信号通道时（如检索内部之于 seq 流），你就得新造，不是接线**（见 D6 回填）。
-
-## English · Recommended Order
-
-| Section | # | Title | One-liner |
-|---------|---|-------|-----------|
-| **Thesis** | 01 | What is an Agent Harness | The 15 layers you still build after the SDK gives you the loop |
-| | 02 | OxyGenie stack overview | Two-process (ws-server + worker) / SDK 0.2.112 / ARK |
-| **Execution Core** | 03 | [Per-message worker model](en/03-per-message-worker-model.md) 🌟 | Why spawn a child per message instead of a resident loop |
-| | 04 | Streaming protocol | seq-numbered NDJSON frames + stdin/stdout duplex + backpressure |
-| | 05 | ExecutionRuntime dual backend | local-process / per-session Docker, fail-closed |
-| **Tools** | 06 | Tool system | SDK preset `claude_code` + custom MCP tools |
-| | 07 | MCP capability center | 7 built-in MCPs + per-user FS enablement |
-| | 08 | Skills system | copy-on-enable + LLM-generated form schema |
-| **Sandbox** | 09 | Ask/Act modes + HITL | canUseTool → approval_request → stdin |
-| | 10 | Bash sandbox | srt fail-closed + prlimit + secrets always stripped |
-| | 11 | Multi-tenant isolation | per-session workspace + path guard |
-| **Session** | 12 | Session persistence | SDK transcript is truth + 13-table DB index |
-| | 13 | Single-host 50 concurrency | semaphore + worker heap cap + idle reaper |
-| | 14 | Multi-model routing | ARK gateway + why SDK 0.2.112 is pinned |
-| **Artifacts** | 15 | [Real preview](en/15-real-preview.md) 🌟 | per-session Docker + Traefik subdomain + bootstrap JWT |
-| | 16 | Artifacts & workbench | heuristic detection / why structured outputs are off / seq |
-| **DevOps** | 17 | Billing & observability | usage observation / why costUsd ≠ charge / PostHog+Sentry+audit |
-| | 18 | Dokploy deploy | multi-stage Docker + GHCR + Traefik + Cloudflare Origin CA |
-| **Retro** | 19 | Retrospective | starter → production: what worked, what didn't |
-
-> English bodies: the **reading-map is fully bilingual**, and the two 🌟 flagships ship in `en/`. The remaining English article bodies are a mechanical translation pass over the Chinese versions — tracked as a follow-up.
+**Kin** 是一个基于 **Claude Agent SDK 0.2.112**（为兼容 ARK 多模型网关而精确锁定）和 **TanStack Start** 的自托管、团队级自主 Claude-agent 工作台。它用 Projects、Skills、MCPs、Artifacts、Python/Bash 执行、真预览、单组织多用户隔离等能力，取代通用托管聊天机器人。目标是一台 16 GB / 8 核主机服务约 50 个并发会话。
 
 ---
 
-## 按"我想了解 X"反查 · Reverse index
+## 已实现系统（课程 01–20）
 
-- **Agent 内核怎么转**：03 → 04 → 05（SDK 在子进程里跑，harness 负责 spawn/流/沙箱）
-- **为什么不自己写 Loop**：01 → 03 → 14（包 SDK 的代价与收益 + ARK 钉版）
-- **怎么不让 LLM 删库 / 跨租户**：10 → 11 → 09（沙箱硬边界 + path guard + HITL）
-- **怎么保住会话**：12 → 13 → 04（transcript 为真相 + reaper + 断流重连）
-- **多模型怎么切**：14 → 02 → 17（ARK 别名 + 钉版 + 按 token 观测）
-- **AI 生成的 App 怎么真跑起来**：15 → 16 → 05（per-session Docker + 子域代理 + manifest）
-- **怎么上线不炸**：18 → 13 → 17（Docker/GHCR/Traefik + 并发上限 + 可观测）
-- **一人/小团队工程取舍**：19 → 02 → 01
-- **该有却还没有的（缺口）**：D1（RAG）→ D2（记忆）→ D3（上下文）→ D4（评测）→ D5（Guardrails）→ D6（可观测）
-- **怎么让 Agent 用上知识库**：D1 → D3 → D5（检索是工具 → 上下文协同 → 检索内容护栏）
-
-## 关键词索引 · Keyword index
-
-- **执行内核**：per-message worker, child_process spawn, Claude Agent SDK 0.2.112, async generator (SDK 内), NDJSON, seq, backpressure（03-05）
-- **工具扩展**：SDK preset claude_code, createSdkMcpServer, MCP enabled.json, copy-on-enable skills, schema generator（06-08）
-- **沙箱权限**：permission-tier ask/act, canUseTool HITL, srt / bubblewrap, prlimit, buildSafeEnv, path-security, cross-tenant guard（09-11）
-- **会话并发**：transcript-as-truth, agent_session, usage_record, audit_log, semaphore, idle-reaper, ARK gateway, pinned SDK（12-14）
-- **产物预览**：real preview, per-session Docker, Traefik subdomain, bootstrap JWT, opaque cookie, artifact detection, structured outputs off, workbench seq（15-16）
-- **计费上线**：token-based credits, costUsd≠charge, Polar webhook, PostHog, Sentry, multi-stage Dockerfile, GHCR, Cloudflare Origin CA, Dokploy（17-18）
-
----
-
-## OxyGenie vs HarWork：同蓝本、不同路 · Same template, different road
-
-| 维度 | HarWork（蓝本） | OxyGenie（本系列） |
-|------|----------------|--------------------|
-| **Agent Loop** | 自写 `agent/loop.ts` 640 行 async generator | **不自写**，包 Claude Agent SDK 的 `query()` |
-| **执行形态** | engine 库/服务双形态，进程内 Loop | **每条消息 spawn 子进程** worker（`ws-query-worker.mjs`） |
-| **沙箱** | Per-User 持久 Docker（pause/resume） | srt(bubblewrap)/Docker + **ExecutionRuntime 抽象**，per-session workspace |
-| **多模型** | 5 厂商硬编码 + AI SDK | **ARK 网关**（GLM/Doubao/DeepSeek/Kimi/MiniMax），钉死 SDK 0.2.112 |
-| **持久化** | SQLite，30 表，DB 为真相 | **Postgres，13 表，SDK transcript 为真相**、DB 为索引 |
-| **产物** | iframe overlay + 多版本 mix + 乐观锁协作 | **真预览**：per-session Docker + Traefik 子域 + bootstrap JWT |
-| **栈** | Next.js + 自研 engine | **TanStack Start + ws-server/worker 双进程** |
-
-**这套系列的价值**：如果你也在"基于官方 Agent SDK 造产品"（而不是从零手写 Loop），HarWork 的 18 篇有一半对不上你的现实——OxyGenie 这 19 篇补的就是那一半。
+| 主题 | Slug | 标题 | 一句话 |
+|---|---|---|---|
+| **定位** | `01-what-is-agent-harness` | 什么是 Agent Harness | 当 SDK 给了你 Loop 之后，仍需建造的 15 层 |
+| **定位** | `02-kin-stack-overview` | Kin 技术栈概览 | 四个进程、钉死的 SDK、ARK 网关与 TanStack Start |
+| **执行** | `03-per-message-worker-model` | Per-Message Worker 模型 | 为什么每个消息都生成一个全新子进程 |
+| **执行** | `04-streaming-protocol` | 流式协议 | NDJSON 帧、seq 编号与背压 |
+| **执行** | `05-execution-runtime` | 执行运行时 | 本地进程与 per-session Docker 后端，FAIL-CLOSED |
+| **工具** | `06-tool-system` | 工具系统 | SDK 预设 `claude_code` 与自定义 MCP 工具 |
+| **工具** | `07-mcp-capability-center` | MCP 能力中心 | 内置 MCP、每用户文件系统启用、凭据与覆写 |
+| **工具** | `08-skills-system` | Skills 系统 | 启用时复制、schema 生成与禁用否决 |
+| **安全** | `09-ask-act-hitl` | Ask/Act 与 HITL | `canUseTool`、`approval_request` 与 stdin 往返 |
+| **安全** | `10-bash-sandbox` | Bash 沙箱 | srt FAIL-CLOSED、`prlimit` 与无条件 secret 剥离 |
+| **安全** | `11-single-org-multi-user-isolation` | 单组织多用户隔离 | per-session workspace 与路径守卫 |
+| **会话** | `12-session-persistence` | 会话持久化 | SDK transcript 为真相，DB 为索引 |
+| **会话** | `13-single-host-concurrency` | 单机并发 | 信号量(max 8)、worker 堆上限与 idle reaper |
+| **会话** | `14-multi-model-routing` | 多模型路由 | ARK 网关、模型别名与 SDK 0.2.112 锁定 |
+| **预览** | `15-real-preview` | 真预览 | 在 per-session Docker 中运行 AI 生成的多文件 App |
+| **预览** | `16-artifacts-and-workbench` | Artifact 检测与 Workbench | 启发式检测、seq 排序与 Workbench 面板 |
+| **协作** | `17-projects-and-branch-on-reply` | Project 与 branch-on-reply | 共享会话、access resolver 与 fork 语义 |
+| **运维** | `18-billing-and-observability` | 计费与可观测性 | `usage_record`、为什么 `costUsd` 不是账单，以及三条可观测腿 |
+| **运维** | `19-dokploy-deploy` | Dokploy 部署 | 多阶段 Docker、GHCR、Traefik 子域与 Cloudflare Origin CA |
+| **反思** | `20-retrospective` | 回顾 | 胜利、债务与 SDK 耦合 |
 
 ---
 
-## 系列说明 · Series notes
+## 设计工作（课程 D1–D6）
 
-- **蓝本**：[sky54laozhu/building-an-agent-harness](https://github.com/sky54laozhu/building-an-agent-harness)（结构与文风借鉴，内容全部基于 OxyGenie 真实代码重写）。
-- **代码快照**：OxyGenie `main`，2026-06-07。
-- **每篇结构**：`问题陈述 → 朴素方案为什么不行 → 核心方案（代码+图）→ 关键实现要点（文件:行号）→ 反直觉结论 → 生产坑 → 配图 → 下一篇`。
-- **配图**：占位于 `assets/img/NN-*.svg`，按需补绘。
-- **状态**：reading-map 双语完成；ZH 19 篇骨架完成，03/15 为全文旗舰；EN 旗舰 03/15 完成，其余 EN 待译。
+| 课程 | 标题 | 状态 | 一句话 |
+|---|---|---|---|
+| `d1-advanced-rag` | 高级 / Agentic RAG | 已完整落地 | 离线嵌入、混合搜索与 agent 驱动的检索工具 |
+| `d2-long-term-memory` | 长期记忆 | 仅设计 | 两层记忆、LLM 驱动更新与系统提示注入 |
+| `d3-context-engineering` | 上下文工程 | 仅设计 | 渐进压缩、磁盘卸载与上下文预算 |
+| `d4-evaluation` | 评估 | 部分落地 | 黄金集、检索/生成指标与回归门 |
+| `d5-guardrails` | 护栏 | 部分落地 | 输出过滤、PII 与 RAG 提示注入面 |
+| `d6-agent-tracing` | Agent / RAG 追踪 | 部分落地 | seq 事件流 span 与每次检索 trace |
+
+---
+
+## 按主题查找
+
+| 如果你想理解…… | 相关课程 |
+|---|---|
+| agent loop 如何运行而不被重写 | `01-what-is-agent-harness`、`03-per-message-worker-model`、`02-kin-stack-overview` |
+| 为什么每个消息生成新进程 | `03-per-message-worker-model`、`13-single-host-concurrency` |
+| 事件如何流式到达浏览器 | `04-streaming-protocol`、`16-artifacts-and-workbench` |
+| 任意代码如何被沙箱化 | `05-execution-runtime`、`10-bash-sandbox`、`11-single-org-multi-user-isolation` |
+| 工具与 MCP 如何扩展 | `06-tool-system`、`07-mcp-capability-center`、`08-skills-system` |
+| Ask/Act 与人工审批如何工作 | `09-ask-act-hitl`、`10-bash-sandbox` |
+| 会话如何持久化与恢复 | `12-session-persistence`、`03-per-message-worker-model` |
+| 多模型路由如何工作 | `14-multi-model-routing`、`02-kin-stack-overview`、`18-billing-and-observability` |
+| AI 生成的 App 如何被预览 | `15-real-preview`、`16-artifacts-and-workbench`、`05-execution-runtime` |
+| 如何部署并保持运行 | `19-dokploy-deploy`、`13-single-host-concurrency`、`18-billing-and-observability` |
+| Project 如何共享会话与 branch-on-reply | `17-projects-and-branch-on-reply`、`11-single-org-multi-user-isolation` |
+| 系统如何被评估与护栏 | `d1-advanced-rag`、`d4-evaluation`、`d5-guardrails`、`d6-agent-tracing` |
+| 长期债务在哪里 | `20-retrospective`、`d2-long-term-memory`、`d3-context-engineering` |
+
+---
+
+## 关键词索引
+
+| 主题 | 关键词 | 课程 |
+|---|---|---|
+| 核心执行 | per-message worker、`child_process` spawn、Claude Agent SDK 0.2.112、NDJSON、seq、背压 | `03`、`04`、`05` |
+| 工具与扩展 | SDK 预设 `claude_code`、`createSdkMcpServer`、MCP `enabled.json`、Skills 启用时复制、schema 生成器 | `06`、`07`、`08` |
+| 安全与隔离 | permission-tier ask/act、`canUseTool`、srt / bubblewrap、`prlimit`、`buildSafeEnv`、path-security、跨用户守卫 | `09`、`10`、`11` |
+| 会话与并发 | transcript-as-truth、`agent_session`、`usage_record`、`audit_log`、信号量、idle-reaper、ARK 网关 | `12`、`13`、`14` |
+| 预览与 Artifacts | 真预览、per-session Docker、Traefik 子域、JWT 引导、artifact 检测、structured outputs 关闭、Workbench seq | `15`、`16` |
+| 协作 | Projects、`project_member`、branch-on-reply、`branchedFromSessionId`、`forkSession`、单一 access resolver | `17` |
+| 运维 | 基于 token 的 credit、`costUsd` 不扣费、Polar webhook、PostHog、Sentry、多阶段 Dockerfile、GHCR、Cloudflare Origin CA、Dokploy | `18`、`19` |
+
+---
+
+## 英文版本
+
+| 课程 | 英文版本 |
+|---|---|
+| 全部 01–20 与 D1–D6 | `en/` 目录下均有对应文件 |
+| 重点打磨版 | `en/03-per-message-worker-model.md`、`en/15-real-preview.md`（较早发布的旗舰篇） |
+
+---
+
+## 与手写 Loop 模板的对比
+
+Kin 的原始结构受到一些手写 Agent Loop 的 harness 文章影响。Kin 刻意走了不同路径：
+
+| 维度 | 手写 Loop 模板 | Kin |
+|---|---|---|
+| Agent Loop | 自写异步生成器 | 包裹 Claude Agent SDK `query()` |
+| 执行形态 | 常驻引擎进程 | 每个消息一个子进程 |
+| 沙箱 | 每用户持久 Docker | srt / bubblewrap / Docker `ExecutionRuntime` 抽象 |
+| 多模型 | 硬编码多个 provider | ARK Anthropic-compatible 网关，SDK 锁定 0.2.112 |
+| 持久化 | 数据库为真相 | SDK transcript 为真相，DB 为索引 |
+| 预览 | iframe 覆盖 | 真正的 per-session Docker 预览 + Traefik 子域 |
+| 栈 | Next.js + 自定义引擎 | TanStack Start + `ws-server` + `ws-query-worker` |
+
+本系列价值在于：为基于官方 SDK 构建产品、而不是从头写 loop 的团队，拆解工程问题如何从“loop 正确性”转移到隔离、持久化、并发、协作与部署。
+
+---
+
+## 说明
+
+- 每节课自包含。交叉引用只在概念自然需要落地时指向文件或其他课程；没有“下一篇”或“上一篇”依赖。
+- 行号引用精确到快照日期，会随代码演进轻微漂移。请以文件路径为主要真相源。
+- 配图规划在 `assets/img/` 下，按课程 slug 命名。
+- 当前项目状态与路线图见 `docs/project/STATUS.md` 和 `docs/project/ROADMAP.md`。
+
+---
+
+> **最后更新**：2026-06-30。本索引与 `docs/project/STATUS.md` 一起维护。

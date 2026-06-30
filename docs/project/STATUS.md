@@ -1,114 +1,30 @@
-# OxyGenie — Status (Living Memory)
+# Kin — Status (Living Memory)
 
 > **This is the living memory of the project. Update it whenever state changes.**
-> Last updated: **2026-06-07**
+> Last updated: **2026-06-30**
 
 ## Current position (one-paragraph snapshot)
 
-**2026-06-06 (later) — Phase C is fully closed: Path A done + preview sharing shipped.** Path A
-(`docker-compose.prod.yml`) is now **verified on a real Linux VM** (Ubuntu 22.04 / Docker 29 via
-Multipass) — migrate exit 0, /health 200, /ws/agent 426, http→https 301, preview ensure→install→start
-+ subdomain forward-auth all green; the VM run **caught + fixed the Docker 28/29 daemon-min-API issue**
-(Traefik v3.5's pinned client v1.24 rejected on a direct socket → added the nginx `dockerproxy` shim,
-`/vX.Y/`→`/v1.44/`, #113/#114). Preview UX closed out: deliverable card gated to **end-of-turn** (#115)
-and a **share = public-link toggle** (#116 — `/__oxy/preview/authorize` bypass for public hosts +
-pinned-alive while shared → token-free `<id>.<domain>/` link); lifecycle + sharing documented
-(README(_CN) + v1 plan §8, #117). Mac browser-tested locally via mkcert + dnsmasq (trusted
-`*.oxygenie.local`). Also repointed the `ai-pr-docs` (ChangeDoc/AI-review) workflow OpenRouter→**ARK**
-(`/api/coding/v3`, `doubao-seed-2.0-code`, `ARK_API_KEY`, #118). **One residual**: Path A LE DNS-01
-wildcard issuance not yet exercised against real public DNS (the VM used a local-only domain). All
-merged to `main`.
+**2026-06-30 — Major feature waves are closed; focus is on consistency, CI health, and documentation maintenance.**
+Since the last snapshot (2026-06-07), the project has shipped OCR, Workbench hardening, permission visualization,
+controlled Bash, upload pipeline fixes, and brand alignment. The `docs/blog/zh/` series is now out of date and is being
+rewritten as self-contained lessons. The remaining active work is: fix the last CI red flags (GHCR push link, TS errors,
+test/validate-routes gates), and keep ROADMAP/STATUS/blog aligned with `main`.
 
-**2026-06-06 — Phase C real-preview is DONE and the product is deployed + verified live; roadmap
-reset (Now = Slimming).** Real-preview v1 (PR #107) + the front-end seam shipped, then a real-world
-test drove three end-to-end fixes — Traefik **v3 `HostRegexp`** (the "preview 404"; never a
-Dokploy/Swarm issue), artifact-card **retarget to the most-previewable file** (the 运行预览 CTA now
-appears), and the agent **no longer self-installs** (the preview engine does install/build/serve) —
-plus a **shared preview dependency cache** (`/pm-cache` + `infra/preview/warm-cache.sh`, cold ≈15 s →
-warm ≈4 s). Three deploy paths with authoritative guides (`docs/deployment/{overview,dokploy,tunnel,
-mac-mini}.md`): **B/Dokploy** (live) and **C/Cloudflare-Tunnel on a Mac** (live + full preview +
-sandbox verified end-to-end over the public path); **A/Compose** now bundled + **VM-verified** on
-Linux/Docker 29 (#113/#114 — see the later snapshot above). All merged to `main` (`78f46af`). **Roadmap reset to Now/Next/Later in `ROADMAP.md` —
-owner-set Now = Slimming only** (remove Mastra + playwright + libreoffice → restore free CI build);
-Next = Path A preview routing + agent code-sandbox fix + Skills/MCP curation; Later = multi-model + CI
-hard gates + accounting.
+Notable closed items:
+- **OCR module** (`/agents/ocr`) shipped with lazy thumbnail navigation, large-PDF timeout handling, and explicit error backflow.
+- **Workbench** now reads real workspace FS, auto-opens the right tab, and has collapsible rails.
+- **Permissions + Bash capability** converged: native `Bash` is permanently disallowed; shell work goes through `mcp__bash__run` gated by `allowBash`.
+- **Upload pipeline** moved attachment delivery to a stable side-channel and fixed the conversation-switch white-screen.
+- **Brand alignment** to **Kin** completed in `CLAUDE.md` and `package.json` metadata.
+- **Projects P1 + branch-on-reply** shipped: `project` / `project_member` / `projectId` on sessions + documents + KBs, single access resolver (`src/server/projects/access.ts`), owner email-invite sharing, and non-owner reply → `forkSession` branch (`branchedFromSessionId`).
 
-**2026-06-04 — Skills integration (S1–S4) is DONE, merged, and owner-tested.** The Skills
-subsystem moved from a filesystem skills-store to a **DB catalog** model
-(`docs/project/prd/2026-06-skills-integration-prd.md`): `skill_catalog` (+ `skill_content_cache`,
-`skill_schema_cache`, `skill_enablement`) seeded from the platform's curated-100, content fetched
-from the upstream **skills-api** (`SKILLS_API_URL`, default `https://skills-api.deeptoai.com`) and
-cached, fillable-variable **schema generated locally** into the DB (cache-first, content-hashed).
-**S1** catalog + browse/detail (#90/#92), seed wired into `migrate` (#91). **S2** install→My-Skills
-(materialize to `~/.claude/skills/<slug>/`, **effective next conversation** — this SDK can't
-hot-reload a running session), default-2 (`find-skills` + `skill-creator`) auto-installed & locked
-(#93), + fillable-schema generation (#95). **D9**: legacy 8 `baoyu` FS assets **deleted** (#94).
-**S3** upstream search/add → user-scoped catalog + an **admin governance page `/admin/skills`** (#96).
-**S4** composer repointed to the catalog model (form←DB schema, lean skill-context to save tokens),
-**user-upload migrated into the catalog** (`source='upload'`, multi-file materialize), legacy
-`SkillsPageComponent` removed (#97/#98/#99). Remaining = maintenance only (content refresh,
-schema prewarm worker, admin curation, org-level sharing) — see Backlog. Capability Center Skills
-tab is now a single catalog surface (browse/search/install/My-Skills/detail/schema/upstream-add/
-upload); `/admin/skills` is the governance guardrail.
-
-**2026-05-31 — Phases 0/1/0.5/2 are DONE; Phase 3 (capabilities + UI/UX overhaul) is IN PROGRESS —
-Wave 0 + Wave 1 merged (#60).** Phase 0.5 delivered the execution-runtime abstraction + single-host concurrency
-governance (target: one 16G/8-core VPS ~50 concurrent sessions): `ExecutionRuntime`+`LocalProcessBackend`
-(#39), `DockerBackend` (#41), unified path guard B3 (#42), WS backpressure C4 (#43/#45), bounded
-worker concurrency S1 (#48), per-worker heap cap S2 (#51), idle-connection reaper S3 (#52), load-test
-harness S5 (#53). Phase 2 delivered observability+accounting: per-run `usage_record` (#55), `audit_log`
-(#56), token metering + quota mechanism **OFF by default** (#57, rate stays config-driven, calibrate
-from real usage data later — see `research/2026-05-billing-design.md`). **Phase 3 Wave 0 + Wave 1 are
-merged (#60)**: design tokens redone to Direction A "暖雾奶油" (warm-cream + terracotta, 换皮不换骨 —
-only `app.css` token values, shadcn/Radix kept), a three-column `WorkbenchPanel` skeleton (Progress /
-Sub-agents / Files / Context, placeholder 3D-icon slots), and the front-end line ① Progress = live
-TodoWrite checklist + ② Sub-agents = flat Task list (pure store selectors in
-`src/lib/hooks/use-session-workbench.ts`, no adapter change, unit-tested 11/11). **Next: Wave 2**
-(Ask/Act mode + ③ HITL tool approval — backend-heavy, needs a small design sub-doc per PHASE3-PLAN §5
-before implementing). Follow-ups: nested sub-agent tree (needs `parent_tool_use_id` on tool-call parts),
-responsive workbench drawer below `lg`, Inter/Source-Serif font files, owner-supplied 3D icons.
-Historical note below (kept for context).
-
-## 🔴 Release blockers (must fix before multi-user / public release)
-
-> Acceptable to defer during single-user / local dev; **must be closed before opening to multiple
-> tenants or the public internet.**
-
-- **R4 — Bash tier-gating gap** ([Issue #69](https://github.com/foreveryh/oxygenie/issues/69))
-  — **RESOLVED BY REDESIGN (not by patch)**. The wantsBash patch (PR #108) was **closed**: the
-  Ask/Act redesign (2026-06-cowork) **removes the read-only `explore` tier entirely** (web+sandbox,
-  no use for Plan), so there is no read-only tier left to leak bash/python. Security = sandbox + (Ask
-  mode) HITL approval; Ask and Act are capability-equal. Net: #69's vulnerable tier is deleted. Close
-  #69 once the Ask/Act model lands (see `research/2026-06-ask-act-hitl-design.md`). Testing during R4
-  also found `explore` could still exec via the **python** tool (ungated) — also moot once explore is gone.
-
-### Historical snapshot (2026-05-30, first browser-verified run)
-
-**🎉 2026-05-30: the app now runs and was VERIFIED IN A BROWSER end-to-end.** Hybrid local mode
-(Docker deps db/redis/minio/meili + `node start-production.mjs` on :3000, WS :3001 — see WORKLOG
-run recipe). A human registered, opened a chat, and ran a Python tool task ("compute 2**10 →
-result.txt"): the full path works — ByteDance Ark (`ark-code-latest`) streaming → multi-step tool
-loop → real Python execution → file written (`1024`). Three real bugs were found *by* this browser
-testing and fixed: Invalid origin (BETTER_AUTH_URL/VITE_BASE_URL 5050→3000), WebSocket couldn't
-connect (VITE_WS_URL → :3001), and the Python tool was killed by srt's macOS Seatbelt (PR #29:
-OS sandbox now Linux-only, secret env-strip always on).
-
-Research is done — the adversarial architecture review + Deep Agents comparison
-([`research/2026-05-architecture-review.md`](./research/2026-05-architecture-review.md))
-**and** a scalability / execution-runtime study
-([`research/2026-05-scalability-and-runtime.md`](./research/2026-05-scalability-and-runtime.md)).
-**Phase 0 (Foundation) is largely done** (repo split, CI gates + branch protection, project
-memory, Docker dev stack, live ByteDance Ark model + passing e2e smoke). We are now **mid
-Phase 1 (security hardening)** — Risks #1/#2/#3/#4/#5/#10 + D4 shipped as merged PRs. The
-runtime study added **Phase 0.5** (execution-runtime + sandbox re-platform) which still needs a
-human design checkpoint + sandbox-backend budget before it starts (see HUMAN-REVIEW.md).
-Caveat: several Phase-1 fixes are code-verified (node --check / unit / smoke) but their full
-WS+auth+DB integration behavior is **NEEDS-VERIFY** pending the running stack.
-**Autonomous sprint in progress** (see `SPRINT-2026-06.md`): first security fixes have landed on
-main — Risk #1 (srt exec sandbox), Risks #3/#4 (cross-tenant scoping), Risk #5 (turn/wall-clock
-bounds). **Live model is now wired & verified end-to-end** via ByteDance Ark (`ark-code-latest`,
-Anthropic-compatible) — `scripts/smoke-agent.mjs` drives a real agent run (query → stream → tool →
-file → done). The earlier GLM-plan blocker is resolved.
+Still open from earlier phases:
+- Phase 2 accounting: `spendOneCredit` is still not wired into production flow; audit log is written but not enabled as a gate.
+- Phase 3 durable run resume and nested sub-agent tree are still pending.
+- Phase 4 multi-model MVP is done; cross-provider failover and capability gating remain.
+- Phase 0 CI hard gates (`typecheck`, `test`, `validate-routes`) are still non-blocking.
+- Projects: project-level instructions are stored but not yet auto-injected into session system prompts. Branch-on-reply source deletion after fork is a known boundary case.
 
 ## Phase tracker
 
@@ -118,115 +34,60 @@ file → done). The earlier GLM-plan blocker is resolved.
 | **Phase 0 — Foundation** | ✅ Largely done (repo/CI/dev-stack/live-model) |
 | **Phase 1 — Security hardening** | ✅ Core done (Risks #1/#2/#3/#4/#5/#10) |
 | **Phase 0.5 — Execution-runtime + single-host concurrency** | ✅ Done (ExecutionRuntime #39, DockerBackend #41, B3 #42, C4 #43/#45, S1 #48, S2 #51, S3 #52, S5 #53) — single 16G/8-core ~50 concurrent target |
-| **Phase 2 — Observability & accounting** | ✅ Done (usage_record #55, audit_log #56, metering+quota OFF-by-default #57) |
-| **Phase 3 — Catch up to Deep Agents (capabilities + UI/UX)** | 🟡 In progress — Wave 0 + Wave 1 merged (#60); **Wave 2 (Ask/Act + HITL tool approval) merged + owner-tested** (2026-06-04, `feat/ask-act-hitl`); + Cowork single-source chat S1/S2 merged. Remaining: nested sub-agent tree, responsive workbench drawer |
-| **Phase C — Real preview engine + deployment** | ✅ Done (PR #107 + E2E fixes + dep cache + **all 3 deploy paths** incl. Path A VM-verified on Linux/Docker 29 #113/#114; end-of-turn deliverable card #115; **preview sharing / public link** #116; lifecycle docs #117; live on `oxygenie.cc`, 2026-06-06) |
-| **Slimming (NOW)** — remove Mastra + playwright + libreoffice → free CI build | ✅ Mastra (#109) + playwright/libreoffice (#110) removed & merged; **CI build OOM fixed** (build.yml builds slim image on 7G runner). Only the GHCR push needs a one-time package→repo link to auto-publish. *(2026-06-06)* |
-| Phase 4 — Multi-model & scale | ⬜ Not started (Later) |
+| **Phase 2 — Observability & accounting** | ✅ Mechanisms done (usage_record #55, audit_log #56, metering+quota OFF-by-default #57); **spendOneCredit still not called in production** |
+| **Phase 3 — Catch up to Deep Agents (capabilities + UI/UX)** | ✅ Core done (Todo panel, flat Task list, Ask/Act HITL); **nested sub-agent tree + durable run resume still pending** |
+| **Phase C — Real preview engine + deployment** | ✅ Done (PR #107 + E2E fixes + dep cache + all 3 deploy paths; end-of-turn deliverable card #115; preview sharing #116; lifecycle docs #117) |
+| **Slimming (NOW)** — remove Mastra + playwright + libreoffice → free CI build | ✅ Done; only GHCR package→repo link remains to turn push-main auto-publish green |
+| **MVP Multi-model selection** | ✅ Done (2026-06-07, PRs #126–#137) |
+| **Phase 4 — Multi-model scale + cross-provider failover** | ⬜ Not started (stretch) |
 
 ## Done (most recent first)
 
-- ✅ **Slimming: Mastra + playwright + libreoffice removed → CI build OOM fixed** (PRs #109/#110,
-  2026-06-06). #109 removed Mastra entirely (backend, the `ai-chat`/`ai-workflow` + `api/*` routes,
-  the AI-SDK chat UI + `ai-elements/**`, the sidebar/menu/homepage surfaces, `@mastra/*`+`ai`+`@ai-sdk/*`
-  deps, schema, docs). #110 removed playwright + libreoffice (Dockerfile blocks + ARGs + `playwright`
-  dep + the render-png route/UI) so the lean image is the only image. **Result: `build.yml` on the 7G
-  GitHub runner now builds the slim image to completion (no OOM)** — verified on the #110 main run; it
-  fails only at the GHCR push (`denied: write_package`) because the `oxygenie/app` package has no linked
-  repo (created manually). One-time fix: package → Manage Actions access → add `foreveryh/oxygenie`
-  (Write). Mac redeployed on the slim image (UI no longer shows the Mastra surfaces). Image 4.23→4.02 GB.
-  Kept `ZHIPU_API_KEY` (Claude GLM-image tool + Zhipu MCP). *(2026-06-06)*
-
-- ✅ **Phase C real-preview deployed + verified live** (merge `78f46af`, 2026-06-06): real-preview v1
-  (PR #107) + front-end seam, then 3 real-world-test fixes — Traefik **v3 `HostRegexp`** (the preview
-  404, *not* Swarm), artifact-card **retarget → most-previewable file** (CTA shows), agent
-  **no-self-install** (preview engine installs/builds/serves) — + **shared preview dep cache**
-  (`/pm-cache` + `infra/preview/warm-cache.sh`, cold ≈15 s → warm ≈4 s). Verified end-to-end over the
-  public path (CF → tunnel → Traefik → app, and `<id>.oxygenie.cc` preview). Invariant recorded:
-  CLAUDE.md #11 (v3 HostRegexp). *(2026-06-06)*
-- ✅ **Deployment: 3 paths + guides** (2026-06-06): **C/Cloudflare-Tunnel** (`docker-compose.tunnel.yml`
-  + `infra/tunnel/*`; Mac/OrbStack, no public IP — bundled Traefik + `dockerproxy` API-version shim +
-  cloudflared) **live + full-feature verified**; **B/Dokploy** live; **A/Compose** partial (preview
-  routing not bundled — NEXT). Authoritative guides `docs/deployment/{overview,dokploy,tunnel,mac-mini}.md`
-  (incl. the from-scratch Mac mini 8GB/16GB recipe — the build-RAM decision). *(2026-06-06)*
-
-- ✅ **Skills integration S1–S4** (PRs #90–#99, owner-tested 2026-06-04): DB catalog replaces the
-  FS skills-store. **S1** `skill_catalog`+caches, curated-100 seed, seed-on-`migrate`, browse +
-  SKILL.md detail (from skills-api, cached) — #90/#91/#92. **S2** install→My-Skills (DB→FS
-  materialize, effective next conversation), default-2 locked, fillable schema gen (DB,
-  content-hashed) — #93/#95. **D9** delete legacy 8 baoyu FS assets — #94. **S3** upstream
-  search/add (user-scoped) + admin `/admin/skills` governance — #96. **S4** composer→catalog
-  (DB schema + lean skill-context token fix), upload→catalog (`source='upload'`), removed legacy
-  `SkillsPageComponent` — #97/#98/#99. Verified: each PR `build`+`lint` green on CI; content/schema
-  paths checked end-to-end against live skills-api + ARK + DB. Migrations 0020 (4 tables) + 0021
-  (`skill_source` add `'upload'`). New env: `SKILLS_API_URL` (+ optional `SKILLS_API_KEY`). *(2026-06-04)*
-
-- ✅ **Phase 3 Wave 0 + Wave 1** (PR #60): redo design tokens → Direction A "暖雾奶油" (warm-cream +
-  terracotta primary, radius 1.25rem, soft warm shadows; only `app.css`, shadcn/Radix kept) + new
-  three-column `WorkbenchPanel` skeleton (Progress/Sub-agents/Files/Context, placeholder 3D-icon slots,
-  hidden below `lg`) + ① Progress live TodoWrite checklist + ② Sub-agents flat Task list (pure store
-  selectors, no adapter change). Verified: `pnpm build` ✓, `test:unit` 11/11, real app light/dark/mobile +
-  panels rendered (injected data via a temporary, reverted store-exposure). Direction preview:
-  `docs/project/wave0-design/preview.html`. *(2026-05-31)*
-
-- ✅ **Phase 0.5 PR-4 — WebSocket backpressure (C4)** (PR #43): worker `send()` awaits stdout
-  `drain`; ws-server pauses `worker.stdout` above 8MB `ws.bufferedAmount`, resumes below 1MB.
-  Verified: smoke PASS (no streaming regression) + standalone primitive test BACKPRESSURE_WORKS. *(2026-05-30)*
-- ✅ **Phase 0.5 PR-3 — unify route path guard (B3)** (PR #42): 5 duplicated `validateFilePath`
-  → one shared `src/server/security/validate-relative-path.ts` (+ hardening: reject `\`, `C:/`, `./`).
-  Verified: test:unit 13/13; regression 7 allow / 16 deny. *(2026-05-30)*
-- ✅ **Phase 0.5 PR-2 — `DockerBackend`** (PR #41): per-exec locked-down container (network none,
-  non-root, read-only rootfs + workspace mount, cpu/mem/pids caps, host env not inherited), via
-  `EXEC_RUNTIME=docker`. Verified in real containers: host key→NONE, network→BLOCKED, ws-write +
-  file-tracking, nonzero/timeout/truncation all correct. *(2026-05-30)*
-- ✅ **Phase 0.5 PR-1 — `ExecutionRuntime` interface + `LocalProcessBackend`** (PR #39):
-  pluggable execution backend; `runPython` delegates to `runtime.exec()`. Behavior-identical
-  refactor (baseline vs after `verify-exec-sandbox` matched; edge cases compute/nonzero/timeout/
-  truncation/file-tracking + 11-field return shape all verified; `test:unit` 6/6). `EXEC_RUNTIME`
-  selector (default `local`; `docker` warns+falls back until PR-2). *(2026-05-30)*
-- ✅ **Live model wired + end-to-end smoke test** (PR #8): switched to ByteDance Ark
-  (`ark-code-latest`, Anthropic-compatible endpoint); `scripts/smoke-agent.mjs` proves the full
-  agent loop — real query → streamed events → tool_use → workspace file written → done. *(2026-05-30)*
-- ✅ **Risk #5 — agent run bounds** (PR #5): `AGENT_MAX_TURNS` → `maxTurns`, `AGENT_WALLCLOCK_TIMEOUT_MS`
-  → worker watchdog; opt-in (0 = unbounded). Watchdog timing verified in isolation. *(2026-05-30)*
-- ✅ **Risks #3/#4 — cross-tenant access** (PR #4): owner predicates on 8 handlers (files.clientId /
-  agentSession.userId / kb.userId / attachment→session chain), found via subagent sweep. *(2026-05-30)*
-- ✅ **Risk #1 — exec sandbox** (PR #3): srt wraps Python tool exec (deny-net + workspace-fenced FS) +
-  secret env-strip; verified end-to-end in an OrbStack container (seccomp=unconfined). *(2026-05-30)*
-- ✅ **Scalability / runtime research** (deep-read of hermes-agent, deer-flow, ruflo,
-  Anthropic `srt`) → target architecture + Plan A/B + **Phase 0.5** added to ROADMAP.
-  Key find: adopt `@anthropic-ai/sandbox-runtime` (TS, Apache-2.0) for exec isolation.
-  See `research/2026-05-scalability-and-runtime.md`. *(2026-05-30)*
-- ✅ **References filled + indexed**: shallow-cloned 5 new agent repos, updated key ones,
-  created tracked `references/INDEX.md` (query-first memory) + this repo's `WORKLOG.md`. *(2026-05-30)*
-- ✅ **main branch protection** on `oxygenie` (required checks: `Quality Checks (22.12)`
-  + `gitleaks`; 1 review + CODEOWNER required; no direct/force push). *(2026-05-29)*
-- ✅ Repo made **public** (it's an open-source product; history was already public via
-  the old `constructa-starter` mirror, and verified secret-free). *(2026-05-29)*
-- ✅ **CI gates merged to main** (PR #1): `pnpm build` check, **gitleaks** secret scan
-  (full-history config + placeholder allowlist), PR template, CODEOWNERS. *(2026-05-29)*
-- ✅ **Secret-leak audit** of full git history (incl. dangling objects): **clean** —
-  no real keys; only placeholders in example/doc files; `data/` never committed. *(2026-05-29)*
-- ✅ **Hygiene**: untracked `.env.docker` → `.env.docker.example`; ignored `/data/`,
-  `/user-data/`. *(2026-05-29)*
-- ✅ **Repo split**: product extracted to `github.com/foreveryh/oxygenie` (private→public),
-  full 383-commit history + 4 tags; `origin`=oxygenie, `upstream`=constructa-starter. *(2026-05-29)*
-- ✅ **Research**: adversarial architecture review + Deep Agents (py/js/ui) comparison
-  + Claude Agent SDK alignment. See `research/2026-05-architecture-review.md`.
+- ✅ **Brand alignment to Kin** — `CLAUDE.md` and `package.json` metadata updated to reflect the Kin identity; stale `oxygenie` / `OxyGenie` references removed from user-facing docs. *(PR #187, 2026-06-30)*
+- ✅ **CI/build red-line cleanup** — `gitleaks` config updated, `DATABASE_URL` compose collision fixed, and build OOM remains fixed. *(PR #188, 2026-06-30)*
+- ✅ **Removed legacy ex0 Ansible/Caddy deployment subsystem** — dead paths and templates deleted. *(2026-06-30)*
+- ✅ **Dokploy compose cleanup** — debug artifacts removed, env landmines fixed. *(2026-06-30)*
+- ✅ **OCR module shipped** — lazy thumbnail navigation, page state badges, parse/render timeouts for 2.4 MB PDFs, reopen restores original files and full page set, explicit error backflow. *(PRs #158–#163, 2026-06-30)*
+- ✅ **Workbench hardening** — Files panel reads real workspace FS, `info` → Context integration, Progress/Sub-agents auto-populate correct tabs, collapsible side rails, unified session-file button. *(PRs #153–#157, 2026-06-30)*
+- ✅ **Permission visualization + Bash capability convergence** — `/admin/permissions` board, runtime capability config stored and wired, `allowBash` decoupled from `permissionMode`, native `Bash` permanently disallowed, controlled `mcp__bash__run` closed-loop. *(PRs #148–#151, 2026-06-30)*
+- ✅ **Upload pipeline + chat switch fixes** — attachment delivery via stable side-channel, upload format allowlist, pause/resume, white-screen fix when switching conversations. *(PRs #138/#139/#144/#145, 2026-06-30)*
+- ✅ **Preview no-build static serve** — pure front-end artifacts are served without a build step, closing a real-preview hard-acceptance gap; multi-file React apps route to the real preview engine instead of Sandpack. *(PRs #152/#153, 2026-06-30)*
+- ✅ **Slimming: Mastra + playwright + libreoffice removed → CI build OOM fixed** (PRs #109/#110, 2026-06-06). #109 removed Mastra entirely; #110 removed playwright + libreoffice so the lean image is the only image. **Result: `build.yml` on the 7G GitHub runner builds the slim image to completion (no OOM).** Only the GHCR push needs a one-time package→repo link.
+- ✅ **Phase C real-preview deployed + verified live** (merge `78f46af`, 2026-06-06): real-preview v1 + front-end seam, then Traefik v3 `HostRegexp` fix, artifact-card retarget to most-previewable file, agent no-self-install, shared preview dep cache (`/pm-cache` + `warm-cache.sh`). Verified end-to-end over the public path.
+- ✅ **Deployment: 3 paths + guides** (2026-06-06): C/Cloudflare-Tunnel live + full-feature; B/Dokploy live; A/Compose bundled + VM-verified on Linux/Docker 29 (#113/#114). Authoritative guides `docs/deployment/{overview,dokploy,tunnel,mac-mini}.md`.
+- ✅ **MVP Multi-model selection** (2026-06-07, PRs #126–#137): per-conversation model picker, health probes, DB registry (`model_connection`/`model_definition`/`model_health`), `/admin/models` CRUD, per-request worker-env routing. Verified ARK serves GLM-5.1 / Doubao-Seed-2.0-Code/-Pro / MiniMax behind one endpoint.
+- ✅ **Projects P1 + branch-on-reply** (PRs around #120–#140, 2026-06): `project` + `project_member` tables, `projectId` on `agent_session`/`documents`/`knowledge_bases`, single access resolver (`src/server/projects/access.ts`), owner email-invite sharing, non-owner reply triggers SDK `forkSession()` into a new `branchedFromSessionId` session in the same project. Unit-tested access logic; live branch-on-reply integration verified per `docs/project/research/2026-06-10-codebase-audit-truth-vs-docs.md`.
+- ✅ **Skills integration S1–S4** (PRs #90–#99, 2026-06-04): DB catalog replaces FS skills-store. S1 catalog + browse/detail; S2 install→My-Skills + fillable schema; S3 upstream search/add + admin governance; S4 composer→catalog + upload migration. Migrations 0020 + 0021.
+- ✅ **Phase 3 Wave 2: Ask/Act + HITL** (2026-06-04): two modes (Ask pauses on action tools for approval; Act autonomous), stdin line protocol for HITL, UI approval prompt. R4 (#69) resolved by removing the read-only `explore` tier.
+- ✅ **Phase 0.5 PR-4 — WebSocket backpressure (C4)** (PR #43): worker `send()` awaits stdout `drain`; ws-server pauses `worker.stdout` above 8MB `ws.bufferedAmount`.
+- ✅ **Phase 0.5 PR-3 — unify route path guard (B3)** (PR #42): duplicated `validateFilePath` → shared `src/server/security/validate-relative-path.ts`.
+- ✅ **Phase 0.5 PR-2 — `DockerBackend`** (PR #41): per-exec locked-down container.
+- ✅ **Phase 0.5 PR-1 — `ExecutionRuntime` interface + `LocalProcessBackend`** (PR #39): pluggable execution backend.
+- ✅ **Risk #5 — agent run bounds** (PR #5): `AGENT_MAX_TURNS`, `AGENT_WALLCLOCK_TIMEOUT_MS`.
+- ✅ **Risks #3/#4 — cross-tenant access** (PR #4): owner predicates on 8 handlers.
+- ✅ **Risk #1 — exec sandbox** (PR #3): srt wraps Python + secret env-strip.
+- ✅ **main branch protection** on `oxygenie` (required checks: Quality Checks + gitleaks; 1 review + CODEOWNER).
+- ✅ **CI gates merged to main** (PR #1): `pnpm build`, gitleaks, PR template, CODEOWNERS.
+- ✅ **Secret-leak audit** of full git history: clean.
+- ✅ **Repo split**: product extracted to `github.com/foreveryh/oxygenie` with full history; made public.
 
 ## In progress
 
-- 🔵 Building out **project memory** (this `docs/project/` set). *(2026-05-29)*
+- 🔵 **Documentation maintenance** — rewrite `docs/blog/zh/` as self-contained lessons and update `reading-map.md`.
+- 🔵 **CI hard gates** — fix TS errors, make tests CI-runnable, migrate 15 REST routes → Server Functions.
 
-## Next up (Phase 0 remainder, roughly ordered)
+## Next up (roughly ordered)
 
-1. ⬜ **Isolated, reproducible dev environment** (devcontainer / compose dev profile;
-   secrets separated; one-command boot of web + ws-server + Postgres/Redis/MinIO/Meili).
-   *(Also the starting point for Phase 1 Risk #1.)*
-2. ⬜ **TS-ify the agent runtime** + typed WS protocol (prerequisite for harness features).
-3. ⬜ Make tests CI-runnable (unit/e2e split + service containers) → re-enable `test` gate.
-4. ⬜ Fix TS errors → re-enable `typecheck` gate.
-5. ⬜ Migrate 15 REST routes → Server Functions → re-enable `validate-routes` gate.
+1. ⬜ **Fix remaining TypeScript errors** → re-enable `typecheck` as a hard gate.
+2. ⬜ **Make tests CI-runnable** (unit/e2e split + service containers) → re-enable `test` gate.
+3. ⬜ **Migrate 15 REST routes → Server Functions** → re-enable `validate-routes` gate.
+4. ⬜ **Wire accounting** — call `spendOneCredit`, enable quota gate, stop logging raw message content (PII).
+5. ⬜ **Conversation history in our own DB** — make Postgres the source of truth for messages; SDK transcript becomes resume input.
+6. ⬜ **Workspace as a first-class concept** — decouple Workspace from Conversation; stable absolute paths.
+7. ⬜ **Nested sub-agent tree** — add `parent_tool_use_id` to tool-call parts for hierarchical display.
+8. ⬜ **Durable run resume** — checkpointing / resume an interrupted run, not just reload history.
+9. ⬜ **Context management / memory layer** — summarization, compaction, long-term memory.
+10. ⬜ **Cross-provider model failover and capability gating** — Phase 4 stretch.
 
 ## Backlog (with difficulty tags)
 
@@ -234,223 +95,42 @@ file → done). The earlier GLM-plan blocker is resolved.
 |---|---|---|
 | Migrate 15 REST routes → Server Functions | M | Overlaps cross-tenant security fixes (Risks #3/#4) |
 | Make tests CI-runnable (unit/e2e split + services) | M | Then make `test` a hard gate |
-| Fix TS errors | S–M | Good starter task; then make `typecheck` a hard gate |
-| Sandbox Python/Bash exec — adopt `srt` + env allowlist | M | **Critical** (Risk #1); via Phase 0.5 `ExecutionRuntime` + Anthropic `srt` |
-| `changedoc` (ai-pr-docs) — wired to ARK ✅ | S (chore) | OpenRouter→**ARK** `/api/coding/v3` + `doubao-seed-2.0-code` (#118); secret = generic **`OPENAI_API_KEY`** (#120) set on `ai-review` env (= the ARK `ANTHROPIC_AUTH_TOKEN`). curl-validated (HTTP 200). `pull_request_target` → **next PR** confirms green. Not a quality gate. Optional: `ai-review` label gate to silence red. |
-| Archive old public repo `constructa-starter` | S (chore) | Avoid two-public-repo confusion |
-| Bump gitleaks/checkout actions off Node 20 | S (chore) | Deprecation forced ~2026-06-16 |
-| **Workspace (项目) as a first-class concept** | L | Decouple Workspace from Conversation; let new-chat pick "existing workspace vs new"; conversations belong to a workspace (stable absolute path). Today每对话=独立 workspace（`getSessionWorkspace`, 1:1）。L2 in `research/2026-06-conversation-persistence-resume-comparison.md`; subsumes the persistence 治本. Owner-deferred 2026-06 (do 治标 first). |
-| **Conversation history in our own DB (治本)** | M–L | Make Postgres the source of truth for messages (reload by session id, cwd-independent — LangGraph principle); SDK transcript becomes resume input + absolute cwd + spawn-validation/fallback (CraftAgent practice). Aligns with PRD "DB=truth, FS=projection". Pairs with the Workspace item. |
-| **Skills: content refresh (scrapedAt/ETag)** | M | Detect upstream changes via skills-api `scrapedAt`/ETag → re-fetch `skill_content_cache` + recompute content_hash → mark schema `stale` → regenerate. Today content is fetched once on first view/install and cached indefinitely. PRD S4 维护. |
-| **Skills: schema background prewarm (worker)** | M | Move fillable-schema generation off the on-demand "Generate" button into the BullMQ worker — prewarm the curated set + regenerate on `stale`. Today generation is lazy/manual (one ARK call per skill, cached globally by content_hash). PRD D5/S4. |
-| **Skills: admin curation of the catalog** | M | Admin UI to add/edit/remove **official** `skill_catalog` entries (editorial fields, default flags, sort) — currently the curated set is seed-only (`db:seed`); only user-added (`scope='user'`) skills are admin-manageable via `/admin/skills`. |
-| **Skills: team/org-level sharing** | L | Promote a user-added/uploaded skill (`scope='user'`) to org-shared (visible to the whole team), vs today's per-owner visibility + admin governance. PRD non-goal for this round; needs an `org` scope + unique-index rework. |
-| **Skills: composer "browse all installed" picker + inline form (optional)** | S–M | A dedicated composer picker listing **all** installed My-Skills → select → inline fillable variable form → compose. Today covered by context-badges (session-active skills + 「使用」 + examples) + A2Composer form (DB schema); this would be a convenience enhancement. PRD S4b-2 (partial). |
-| ✅ ~~NOW · Remove Mastra entirely~~ | L | **Done — PR #109.** Backend + all UI surfaces + deps + schema + docs. |
-| ✅ ~~NOW · Remove playwright + libreoffice~~ | M | **Done — PR #110.** Dockerfile blocks + ARGs + `playwright` dep + render-png route/UI. Lean image is the only image now. |
-| **🟢 NOW · Re-enable free CI build (last step)** | XS | **Build OOM fixed** (build.yml builds the slim image on the 7G runner). Remaining: one-time GHCR **package→repo link** (`oxygenie/app` → Manage Actions access → add `foreveryh/oxygenie` Write) → push-main auto-publish goes green. |
-| ✅ ~~NEXT · Path A: bundle Traefik + preview-auth~~ | M | **Done — `docker-compose.prod.yml` (#113/#114).** Bundled Traefik + preview-auth (v3 `HostRegexp`) + wildcard cert + `dockerproxy` shim (Docker 28/29 API min); LE DNS-01 + CF Origin CA. **VM-verified** on Ubuntu 22.04/Docker 29. Residual: LE issuance vs real public DNS untested. |
-| ✅ ~~NEXT · Agent code sandbox: fix srt registration sequencing~~ | M | **Done — PR #112.** Eager `ensureSandbox()` before the `sandboxStatus()` check (was `state=null` → bash never registered); bubblewrap in image. Verified live (srt active). |
-| **🔵 NEXT · MCP catalog/picker + fix stale "coming soon" copy** | M | No curated MCP picker yet; `skills.content.ts` "enabling … coming soon" copy is outdated (Skills shipped). Pairs with the Skills curation rows above. |
-| **🎯 NEXT · Multi-model selection (owner focus 2026-06-07)** | S–M (MVP) | Pick model per run vs the startup `ANTHROPIC_MODEL`. MVP = same-gateway (ARK) switch: curated registry + `model` plumbing (mirror `skillSlug`/`permissionTier`) + real composer picker + `query({model})`. Plan: `research/2026-06-multi-model-support-research.md`. |
-| **🟣 LATER · Multi-model: cross-provider routing + failover** | L | Phase 4 stretch (after the NEXT MVP): per-request env routing to other Anthropic-compatible gateways, DB-backed admin registry, failover, per-capability key split, capability gating. Within **SDK 0.2.112 / ARK** (Anthropic-protocol only). |
-| **🟣 LATER · Revisit `ENABLE_STRUCTURED_OUTPUTS` (off)** | M | Coupled to the artifact/structured-output strategy; Phase C now done → resolve the StructuredOutput-leak root cause instead of keeping the flag forced-off. |
-| **🟣 LATER · Wire accounting (Phase 2)** | M | `spendOneCredit` never called; persist per-run cost/tokens; enable audit log; stop logging raw message content (PII). |
-| **🟣 LATER · Email-verify self-host UX + P16 version recording + deprecated-fn cleanup** | S | The "verify your email" banner on a self-host is friction; P16 artifact version recording paused (`ENABLE_VERSION_RECORDING=false`); `syncOldUserSkills`/`getSkillStatus` are `@deprecated`. |
+| Fix TS errors | S–M | Then make `typecheck` a hard gate |
+| Wire accounting (`spendOneCredit`) | M | `spendOneCredit` never called; persist per-run cost/tokens; enable audit log gate; stop logging raw message content (PII) |
+| **Workspace as a first-class concept** | L | Decouple Workspace from Conversation; stable absolute paths; conversation belongs to a workspace |
+| **Conversation history in our own DB** | M–L | Postgres source of truth for messages; SDK transcript becomes resume input |
+| **Skills: content refresh (scrapedAt/ETag)** | M | Detect upstream changes via skills-api and regenerate stale schemas |
+| **Skills: schema background prewarm (worker)** | M | Move fillable-schema generation into BullMQ worker |
+| **Skills: admin curation of the catalog** | M | Admin UI to add/edit/remove official catalog entries |
+| **Skills: team/org-level sharing** | L | Promote user-added skills to org-shared |
+| **Skills: composer "browse all installed" picker** | S–M | Convenience picker listing all installed skills with inline form |
+| **MCP catalog/picker + fix stale "coming soon" copy** | M | Curated MCP selection UI; verify any stale copy |
+| **Context management / memory layer** | L | Summarization, compaction, long-term memory (design docs D2/D3) |
+| **Unify per-message worker and per-session preview runtime** | L | Shared lifecycle and warm workspace pool |
+| **Revisit `ENABLE_STRUCTURED_OUTPUTS`** | M | Resolve StructuredOutput leak root cause instead of keeping the flag forced-off |
+| **Email-verify self-host UX** | S | Reduce friction on self-hosted email verification |
+| **P16 artifact version recording** | S | Currently paused (`ENABLE_VERSION_RECORDING=false`) |
+| **Deprecated-function cleanup** | S | `syncOldUserSkills`, `getSkillStatus` |
+| **Archive old public repo `constructa-starter`** | S | Avoid two-public-repo confusion |
+| **Bump gitleaks/checkout actions off Node 20** | S | Deprecation forced ~2026-06-16 |
 
 ## Known weakened gates (intentionally non-blocking until backlog done)
 
 - `typecheck` — non-blocking (pre-existing TS errors).
-- `validate-routes` — non-blocking (15 pre-existing REST-route violations).
+- `validate-routes` — non-blocking (pre-existing REST-route violations).
 - `test` — non-blocking (suite is e2e/integration; needs DB + live server in CI).
 
-## Decision log
+## Decision log (selected)
 
-- **2026-06-07** — **多模型切换 完整版完成（PR1–8 + 6b）。** 用户可**每会话**选模型,跨连接/账号(任何
-  Anthropic 协议网关),仅在 healthy 时可选。落地:DB registry(`model_connection`/`model_definition`/
-  `model_health`)从 `OXY_MODELS_SEED`(+ 旧 `ANTHROPIC_*` 兜底)种子;**6h 探活**(BullMQ + 开机即探)门控菜单;
-  typed `/api/models/resolve` + **按请求 worker-env 路由**(baseURL/互斥 auth/model/alias,**不健康即报错不静默回退**);
-  composer **picker**;**`/admin/models`** 看板 **+ CRUD**;每会话记忆(localStorage)。**密钥只在 env(按 tokenEnv 名),
-  不入 DB/前端/日志。** 实测:ARK 一个 endpoint 同时供 GLM-5.1 / Doubao-Seed-2.0-Code/-Pro / MiniMax(全 200)。
-  关键决策:① 驱动 SDK 0.2.112 → 只支持 Anthropic 协议网关(OpenAI-only 需转译,Phase 4);② worker 是每请求新子进程
-  → 按请求覆写 env 即可跨账号路由,无需 0.3.x;③ AUTH_TOKEN 优先于 API_KEY → 互斥设一删一;④ alias 按连接设,
-  子代理不串账号;⑤ model 选择属 UI 偏好 → localStorage 每会话持久(DB 跨设备留作后续)。架构发现 A1(typed 内部
-  API,已用 resolve 端点立样板)/A2(drizzle 快照漂移,补了 mastra_thread reconcile;CI `generate --check` 待加)
-  见 `research/2026-06-architecture-observations.md`。PRs #126/#127/#128/#129/#130/#131/#132/#133/#134/#136/#137。
-  Spec:`prd/2026-06-multi-model-switching-prd.md`;资料包:`research/2026-06-multi-model-context-pack.md`。
-  待办(非阻塞):changedoc `generate --check` CI 护栏(A2);OpenAI-only 转译/failover/能力门控(Phase 4)。
-
-- **2026-06-07** — **本轮收工 + 下一焦点 = 多模型选择(owner 定)**。今天(06-06 会话)全部收口:Phase C 全部完成、
-  分享功能上线、文档对齐、changedoc 接通 ARK(见下条)。**下一步 = 让系统支持多模型选择**,已先产出调研 +
-  分阶段实施计划 `research/2026-06-multi-model-support-research.md`。要点:① 现状 = model 是启动期单一
-  `ANTHROPIC_MODEL`,UI「GLM 5.0」是死徽章,前端→worker 无任何传递;② 关键约束 = 我们驱动的是 **Claude Agent
-  SDK(钉死 0.2.112)**,只说 Anthropic 协议,故"多模型"= 跨 **Anthropic 兼容网关**的多模型(OpenAI-only 厂商需加
-  转译代理,暂不做);③ 关键使能点 = worker 是**每请求新子进程**,`ws-server` 可**按请求覆写** 其
-  `ANTHROPIC_MODEL`/`BASE_URL`/`AUTH_TOKEN` → 无需 0.3.x 即可路由到任意 provider;④ **MVP(明天)= 同网关(ARK)
-  切模型**:精选 registry + `model` 走通(照搬 `skillSlug`/`permissionTier` 链路)+ 真 composer picker +
-  `query({model})`,**不**改 baseURL/key、**不**动 DB;⑤ v2 = 会话/消息持久化 + DB registry + admin 策展
-  (照搬 Skills 目录);Phase 4 stretch = 跨 provider 路由/failover + per-capability key 拆分。参考:LibreChat
-  (spec→preset + 每消息记录 model)/ Lobe(provider card + 运行时 resolve)——借思路不抄码。
-
-- **2026-06-06 (later)** — **Phase C 收口:Path A 完成 + 预览分享上线 + changedoc 切 ARK。结论:Phase C 全部完成。**
-  ① **Path A**(`docker-compose.prod.yml`)在**真 Linux VM**(Ubuntu 22.04 / Docker 29,Multipass)验证通过
-  (migrate/health/WS/重定向/预览 forward-auth 全绿);此 VM run **逮到并修了 Docker 28/29 守护进程最低 API**
-  问题(Traefik v3.5 客户端 v1.24 在直连 socket 被拒 → 加 nginx `dockerproxy` 改写 `/vX.Y/`→`/v1.44/`,#113/#114)。
-  **遗留**:LE DNS-01 泛域名签发未在真公网 DNS 上跑过(VM 用本地域名;配置与已验证的 CF/Origin-CA 栈共用)。
-  ② **预览体验收尾**:成果物卡**收到整轮结束**才显示(#115);**分享=公开链接切换**(#116——`/__oxy/preview/
-  authorize` 对 public host 放行 + 分享期间钉住常驻 → 无 token 的 `<id>.<域名>/` 链接,任何人可开)。Mac 本机
-  用 mkcert + dnsmasq 受信泛域名证书完成浏览器验证。生命周期+分享写入 README(_CN) + v1 计划 §8(#117)。
-  ③ **changedoc 接通**:`ai-pr-docs`(ChangeDoc/AI-review)从 OpenRouter 切到 **ARK**
-  (`/api/coding/v3`、`doubao-seed-2.0-code`,#118),secret 名按 owner 要求用通用 **`OPENAI_API_KEY`**
-  (#120)。key = 本地 `~/oxygenie-deploy/secrets.env` 的 `ANTHROPIC_AUTH_TOKEN`,已写入 `ai-review`
-  Environment(值未回显)。**已 curl 实测三件套**:`/api/coding/v3` + `doubao-seed-2.0-code` + 该 key →
-  HTTP 200。注:`pull_request_target` 跑基分支版本,故**下个 PR** 的 changedoc 才会用上新配置并变绿。
-
-- **2026-06-06** — **Phase C 真预览全链路打通 + Mac/Tunnel 部署上线 + 路线图重置**。
-  ① **真预览 E2E 修复**(实测驱动):Traefik **v3 `HostRegexp`** 修预览 404 —— v2 命名组
-  `HostRegexp(`{name:regexp}`)` 在 v3 **静默不匹配**,`<id>.域名/__oxy/preview/auth` 直接 404;**此前
-  误判为 Dokploy-Swarm,实为通用 bug**,已修 `docker-compose.{tunnel,dokploy}.yml` 并记 **CLAUDE.md 不变量 #11**。
-  artifact 卡**改指向最可预览文件**(流式时 package.json 先到建卡、index.html 后到不再另建卡 → 运行预览 CTA 出现);
-  agent **不再自装依赖**(系统提示:沙箱按设计禁网,装/构建/serve 交预览引擎)。
-  ② **预览依赖共享缓存**(`/pm-cache` 卷 + `infra/preview/warm-cache.sh`,冷 ≈15s → 暖 ≈4s)。
-  ③ **Mac + Cloudflare Tunnel 部署(Path C)**:`docker-compose.tunnel.yml` + `infra/tunnel/*`,无公网入站;
-  OrbStack docker-API 版本问题用 nginx `dockerproxy` 改写 `/vX.Y/`→`/v1.44/`;live + 全功能(预览+沙箱)
-  公网端到端验证;沉淀 `docs/deployment/{overview,tunnel,mac-mini}.md`(含从零 Mac mini 8GB/16GB 指南——
-  **核心是构建内存:16G 本机构建、8G 需异机构建后导入**)。全部并入 `main`(`78f46af`)。
-  **注**:推送**绕过了 main 分支保护**(owner admin 权限)、CI 必需检查未运行——代码为线上实测验证,正式 CI 门未跑;
-  外部贡献仍应走 PR。
-  ④ **路线图重置(Now/Next/Later,见 `ROADMAP.md`):owner 定 Now = 仅瘦身**(移除 Mastra + playwright +
-  libreoffice → 恢复 7G runner 免费 CI 构建 + push-main 自动发 GHCR)。Next = Path A 预览路由补全 + agent
-  代码沙箱注册时序修复(`state=null`)+ Skills/MCP 策展(含 MCP 目录/选择器);Later = 多模型(registry/路由/
-  failover,守 SDK 0.2.112/ARK 约束)+ CI 硬门禁(typecheck/validate-routes/test)+ 计费接通(Phase 2)。
-
-- **2026-06-05** — **✅ `oxygenie.cc` 在 Dokploy 上线成功**（/health 200、/ 200、/ws/agent 426、TLS via CF）。
-  闯过 **8 个部署卡点**,根因 + 修法已沉淀到 **`docs/deployment/dokploy.md`**(7 步指南 + 卡点根因表):
-  ① 构建 OOM/挂死 → **镜像 off-server 构建推 GHCR、Dokploy 只拉**(compose 用 `image:`+`pull_policy:always`,非 `build:`);
-  ② playwright/libreoffice 拖慢/吃内存 → `INSTALL_BROWSER=false INSTALL_OFFICE=false`(并决定**永久移除**这两个重型工具);
-  ③ GHCR 包私有 → 设 public;④ 卷名全局冲突(撞 deeptoai 遗留卷)→ `APP_NAME_SANITIZED` 必须唯一;
-  ⑤ `DATABASE_URL` 与 `POSTGRES_PASSWORD` 失配(28P01)→ compose 内从 `POSTGRES_*` 拼 DATABASE_URL(单一来源);
-  ⑥ migrate `getaddrinfo EAI_AGAIN db`(DNS 时序)→ migrate entrypoint 重试直到 db 可解析;
-  ⑦ CF 免费 SSL 不覆盖两层泛域名 → 预览用单层 `*.oxygenie.cc`;⑧ ARK 用 `ANTHROPIC_AUTH_TOKEN` 非 `API_KEY`。
-  关键认知:**本地用同一 compose+镜像+env 全栈跑通(migrate+app+WS 200)→ 失败全在 Dokploy 环境/状态**,
-  逐一隔离修复。**遗留**:CI 7G runner 构建仍 OOM(待砍 Mastra/playwright/office 瘦身后恢复免费 CI 构建);
-  Phase C 路由预览的浏览器 E2E 待做。
-- **2026-06-05** — **生产部署拍板：`oxygenie.cc` on Dokploy（待执行→已上线）+ preview-controller 硬化**。
-  完整决策/差异/runbook → `research/2026-06-oxygenie-cc-dokploy-deployment.md`。要点：
-  ① **域名**：app=apex `oxygenie.cc`，预览=**单层 `*.oxygenie.cc`**（CF 免费 SSL 不覆盖两层
-  `*.preview.`，故弃用 2 层）。② **TLS**：CF 橙云 + **Full(Strict) + Origin CA 证书**，**不用
-  Let's Encrypt**（橙云下 HTTP-01 会失败）；Origin CA 用带 `Zone>SSL&Certs>Edit` 的 API Token
-  签（Service Key 已弃用）。③ **ARK 鉴权**：用 **`ANTHROPIC_AUTH_TOKEN`（Bearer），不设
-  `ANTHROPIC_API_KEY`**；base=`https://ark.cn-beijing.volces.com/api/coding`；**无需改鉴权代码**
-  （worker 继承 `process.env`，SDK CLI 直接读环境）。④ **模型**：主/sonnet/opus/subagent=`glm-5.1`，
-  haiku=`doubao-seed-2.0-lite`；多模型切换延后。⑤ **镜像**：GHCR（既定），从 `codex/phasec-real-preview`
-  以 `--platform linux/amd64` + VITE build-args 重建。⑥ **dokploy compose 需改 6 处**（Host
-  deeptoai.com→oxygenie.cc、去 letsencrypt、预览单层、ARK auth-token、ZHIPU 改可选、VITE build-args）。
-  **preview-controller 硬化**（`d19621c`，本地真预览引擎已验证）：serve 改 detached `exec node`（修首跑竞态）、
-  服务器自写容器内 pid（修 restart/reap）、`CapAdd:['CHOWN']`（修 CapDrop ALL 下非-root 装依赖 EACCES）。
-- **2026-06-04** — **Ask/Act + HITL（Phase 3 Wave 2）实现 + owner 实测通过 + 合并 `main`**（merge
-  `feat/ask-act-hitl`）。2 档(🖐 Ask 逐动作审批 / ⏩ Act 自主,默认),砍掉 explore/auto/Plan。实现:先
-  **spike 验证** SDK `canUseTool` 能 async-await(0.2.112),再**对照官方文档**(canUseTool=官方 HITL 机制;
-  Ask=`default`、Act=`acceptEdits`;options.toolUseID/title/signal;reject=interrupt:false)。chunk1=模型
-  3→2;chunk2=worker stdin 行协议 + HITL canUseTool(只读放行/动作类发 approval_request 并 await)+ ws-server
-  中继/回写 + 前端 pendingApprovals + ApprovalPrompt 卡。实测:选择器两档、Ask 逐动作批准/拒绝生效、Act 不打断。
-  **R4(#69)由"删 explore"解决,PR #108 已关。** 设计/校验见 `research/2026-06-ask-act-hitl-design.md`(§8 文档校验)。
-
-- **2026-06-04** — **权限模型拍板:对标 Cowork 的 Ask/Act 两档,砍掉 Plan/explore/auto**。理由:纯
-  web、不在客户本地、全沙盒 → 只读 Plan 无用;符合既定哲学(安全=沙盒,档位=交互偏好)。**Ask**=每个动作
-  类工具前暂停等批准(HITL);**Act**=自主(默认)。两档能力相同,只差打不打断。**含义**:① R4(#69)由"删
-  explore"解决,**PR #108(wantsBash 补丁)已关闭作废**;② Phase C 的 python 越权洞随 explore 消失而作废;
-  ③ **Ask = HITL = 要真建**(canUseTool 暂停 → UI 批准/拒绝 → 回写 worker stdin 的往返协议),正是规划中的
-  Phase 3 Wave 2。设计子文档:`research/2026-06-ask-act-hitl-design.md`(含 stdin 行协议改造、canUseTool
-  组合闸、approval 协议、**实现前先 spike 验证 SDK canUseTool 能 async await**)。**Next: 评审设计 → spike → 实现。**
-- **2026-06-04** — **Phase C v1 代码就绪（PR #107），E2E + 一处回退挂到「全栈那轮」**。架构师交付真预览**后端**（`src/preview/*`：PreviewRuntime + controller sidecar + 一次性 token→cookie + manifest；`ws-server.mjs` 加 start/stop_preview + preview_state；docker-compose）；评审通过（范围/契约/安全六坑/5-5 单测/SDK 0.2.112）。架构师把收尾**交回评审执行**：已补 **P1 前端接缝**（`chat-session-store.previewState` + ws-adapter 收发 + `useSessionPreview` selector + `artifact-html` 「运行预览」CTA→ready 换 live iframe）、**P3**（preview 测试 `@vitest-environment node`；secret-from-env 架构师已做）。全部在分支 `codex/phasec-real-preview` / worktree `oxygenie-phasec` / **PR #107**（build+lint 绿、5/5 单测）。**未做 = P2 端到端**（需全栈 docker-compose：preview-controller+Traefik+浏览器交互验收 §3.1 1–5），owner 选延后。**已知回退（仅本地、非紧急、owner 同意延后）**：在 phasec 构建上「历史会话加载不出聊天记录」（main 正常）；已排除 历史合并逻辑/后端发送/intlayer，疑为 P1 给 `artifact-html` 加 `~/claude/adapters` import 边改变 Vite chunk 切分导致客户端初始化问题——**精确定位需浏览器 console，连同 P2 全栈那轮一并 pin+fix**（届时把 artifact-html 与 adapter/store 解耦）。
-- **2026-06-04** — **Phase C（真预览）交给架构师 + 完整实施指南落档**。chat/Workbench 单源重做 S1+S2 已合并 `main`、S3 延后备案，**真预览（多文件 App 跑起来）= Phase C，归架构师**。交付 `research/2026-06-phasec-implementation-guide-for-architect.md`（① 如何实施含 **UI 接缝契约**：`.oxygenie/app.json` + `preview_state` 事件 + `chat-session-store` slot + `useSessionPreview` selector + 卡片「运行预览」露出，后端/前端归属切分；② 预期=SPA static 硬验收；③ 验证清单+回归；④ 求助/协作规矩）。另：成果物多文件 App 预览加了「这是多文件 App…」提示横幅（`artifact-html.tsx`，合并 `main`）。
-- **2026-06-04** — **Cowork S2 实现（turn 卡渲染收尾）+ S3 决定（暂不修，挂 artifact 线）**。S2：
-  `turn-builder.ts` 折叠头改 Cowork 式 **「Worked Xs · N steps · 改 K 文件」**（耗时=工具 `elapsedSeconds`
-  之和、步数=工具/搜索组渲染行、改动文件=Write/Edit/MultiEdit/NotebookEdit 去重计数；纯思考轮 stepCount=0
-  回退实时 previewText），并**去重连续重复的 thinking/intermediate** 行；运行中仍显示实时 preview + 步数 Tag。
-  历史/实时同组件（S1 P4 合并后天然成立）。**S3（结构化输出泄漏）决定不在本 PR 修**：owner 选「维持 env-off
-  + 不加投机文本过滤」——泄漏当前不触发（`ENABLE_STRUCTURED_OUTPUTS` **强制默认 false**，已写进 `.env.example`/
-  `CLAUDE.md`/worker 注释），根因与 artifact/结构化输出策略耦合，**备案到 `research/2026-06-real-preview-architect-brief.md` §9**，随 Phase C/artifact 线统一定。分支 `feat/cowork-s2-turn-card`。
-- **2026-06-04** — **Cowork 单源重做 S1 实现 + owner 实测通过 + 合并 `main`**（merge `feat/cowork-s1-single-source`）。
-  落地：`useLocalRuntime`→`useExternalStoreRuntime`，`chat-session-store.messages` 成唯一有序真相源，
-  ws-adapter `runChat()` 把每个 chunk 写进 store（带单调 `seq`），左侧流 + 右侧 Workbench 同读一份
-  → **Progress/Files/Context 跑时实时、无需刷新**。实测迭代修掉 5 个问题：① converter 只在 assistant
-  角色带 `status`（否则发消息即报 "status is only supported for assistant messages"）；② 取消成果物
-  **自动弹面板**（仅点击开，避免盖住 Workbench）；③ 文本兜底卡与 Write 卡**去重**（升级临时卡而非新建）；
-  ④ **历史按轮合并**——`loadHistoricalMessages` 把一轮的多条 SDK 消息（每段文字/工具一条 + tool_result 走
-  user 消息）合并成**一条** store 消息，历史与实时渲染一致（每轮一张 turn 卡 + 一张交付物卡，告别「6 张
-  步骤已完成 + 3 张重复卡」）；⑤ `.js/.ts` 误判为 React 丢进 Sandpack 执行 → 原生 DOM 脚本崩
-  "Something went wrong"，改为**非组件代码只读展示**；并删掉重复的全局 `ThreadArtifactCallout`（与 turn
-  内联卡重复）。**真预览（多文件 App 跑起来）仍是 Phase C 沙盒，不在 S1**。**Next: S2**（turn 卡头摘要
-  「Worked Xs · N steps」+ thinking 去重）、S3（结构化输出泄漏处理）。规格见
-  `research/2026-06-cowork-chat-workbench-redesign-spec.md`。
-- **2026-06-04** — **聊天+Workbench「Cowork-faithful 单源重做」定方向（owner 选 A）**。测试暴露根因：
-  Workbench 四个 tab 读 zustand `chat-session-store.messages`（只在刷新/resume 由 `loadHistoricalMessages` 填），
-  而实时消息在独立的 assistant-ui `useLocalRuntime` 里，且 `WorkbenchPanel` 渲染在 `AssistantRuntimeProvider`
-  之外 → **结构上拿不到实时数据，刷新才有**（这正是最早「Progress 滞后」的真因）。正解 = **单一实时真相源**
-  （推荐 `useExternalStoreRuntime`，store 持有单一有序消息列表，左侧流 + 右侧 Workbench 都读它），一把修好
-  Workbench 实时 + 消息顺序 + 历史/实时渲染统一 + Cowork 式渐进折叠。已交付实施规格
-  `research/2026-06-cowork-chat-workbench-redesign-spec.md`，将在**专门对话**按规格实现（owner 不要尾段仓促一把梭）。
-  期间已落地的小修：Phase B（Files/Context selector，#102，刷新后正确）、A3（每轮一张成果物卡，#103）。
-  另：泄漏的 "StructuredOutput" 内部消息是 SDK `outputFormat` 强制机制（`ENABLE_STRUCTURED_OUTPUTS=true`），建议先关。
-- **2026-06-04** — **「真预览」架构拍板（架构师评审）**：让用户看到 agent 生成的多文件 App 真正运行。
-  方向 = **per-session 持久沙盒 + 按需预览进程 + idle 回收**（不每会话常驻 dev server）。
-  新增 `PreviewRuntime`/`SessionSandboxManager`（不硬改 one-shot `DockerBackend`）+ `preview-controller`
-  sidecar 独占 docker socket；**双档**（默认 build→内置静态服务器 serve=硬验收，HMR dev=best-effort）；
-  **Traefik + Docker provider + forward-auth**（本地 `*.127-0-0-1.sslip.io`、生产 `*.preview.<domain>`+
-  wildcard cert，子路径仅兜底，v1 不做 on-demand TLS）；鉴权用**一次性 bootstrap JWT → opaque
-  httpOnly host-only preview cookie**；app manifest = `.oxygenie/app.json`（v1 启发式生成，命令仅限
-  package.json scripts）；**Provider 抽象先留、只实现 Docker**；**v1 硬验收 = 纯前端 SPA
-  install→build→static→iframe**，Next/Express/带 API = best-effort。诊断+对比+计划见
-  `research/2026-06-real-preview-architect-brief.md` + `…-v1-implementation-plan.md` +
-  `…-workbench-artifact-ordering-fix-plan.md`。**归属**：沙盒新对话执行。也顺带记录三个 UI 缺陷
-  （Workbench 只 Progress/滞后、每文件一张「打开成果物」、消息错乱）的根因与 Phase A/B 修正（UI 轨道）。
-- **2026-06-04** — **Skills integration S1–S4 shipped + owner-tested** (PRs #90–#99). Model:
-  **DB catalog = source of truth**, FS = runtime projection (materialize enabled skills to
-  `~/.claude/skills/`). Key owner decisions recorded in the Skills PRD:
-  **D6** default skills = only `find-skills` + `skill-creator` (admin, locked);
-  **D7** install effective **next conversation** (this SDK can't hot-reload a running/resumed
-  session — kept the "需重新发起对话" contract, replaced full SKILL.md injection with a lean hint +
-  SDK progressive disclosure);
-  **D8** seed wired into `migrate` (idempotent, best-effort);
-  **D9** deleted legacy 8 `baoyu` FS assets (curated-100 already references baoyu upstream — no loss);
-  **D10** upstream/upload skills are user-scoped (per-owner visible) + admin-visible/removable via
-  `/admin/skills` (governance guardrail). Remaining work is maintenance-only (see Backlog).
-- **2026-06-02** — Conversation-resume bug ("navigate away → back → empty history"):
-  fixed 治标 (#86) = absolute session paths (`resolveSessionsRoot()` → `path.resolve`,
-  normalize `CLAUDE_SESSIONS_ROOT`) + auto-resume on route remount. Root cause was a
-  relative-path/cwd mismatch (worker cwd=workspace vs ws-server cwd=repo root);
-  local-dev-only (prod uses absolute `/data/users`). **治本** (own DB message store)
-  and **Workspace as a first-class concept** are Owner-deferred to backlog (do 治标
-  first). See `research/2026-06-conversation-persistence-resume-comparison.md`.
-- **2026-06-02** — SDK pinned to **0.2.112** (ARK-compatible ceiling); 0.2.113+ switch to a
-  native binary incompatible with the ARK `/api/coding` gateway. See skills arch doc §九.
-- **2026-06-02** — Product positioning settled: **self-hosted private deployment for SMB
-  teams (company/team-internal, semi-trusted users), NOT a public multi-tenant SaaS.**
-  Drives the threat model (defense-in-depth for mistakes, not anti-anonymous lockdown).
-  See VISION §1 + CLAUDE.md top.
-- **2026-05-30** — Execution layer: insert **Phase 0.5** (runtime + sandbox) before Phase 1.
-  Adopt **`@anthropic-ai/sandbox-runtime` (srt)** as the exec sandbox primitive; define a TS
-  **`ExecutionRuntime`** abstraction (pattern from hermes-agent `BaseEnvironment` + deer-flow
-  `SandboxProvider`); then bake-off serverless (Modal/Daytona/E2B) vs self-hosted container pool
-  at 100→1000 concurrency. Rationale: per-message-spawn + single ws-server can't scale; srt is
-  TS/Apache-2.0 and fixes Risk #1. (See `research/2026-05-scalability-and-runtime.md`.)
-- **2026-05-30** — Reference mgmt: shallow-clone repos, keep tracked `references/INDEX.md`,
-  query-first / record-on-deep-contact. ruflo judged out-of-scope (local CC augmentation, not server scaling).
-- **2026-05-29** — Strategy: **harden + borrow from Deep Agents; do not migrate/integrate.**
-  Rationale: Deep Agents is a single-process library with divergent goals; our
-  platform/isolation/SDK investment is the asset. (See VISION §5.)
-- **2026-05-29** — Repo topology: separate code repo (`oxygenie`) from the docs/PM
-  repo; **no submodule** (friction for many contributors); keep old remote as `upstream`.
-- **2026-05-29** — Make `oxygenie` **public** to unlock free branch protection and
-  because it is intended to be open-source; verified safe (history already public + secret-free).
-- **2026-05-29** — Phase-0 CI: keep `lint`/`build`/`gitleaks` as hard gates now;
-  `typecheck`/`validate-routes`/`test` non-blocking until their backlog items land.
+- **2026-06-30** — **OCR + Workbench + permissions + upload + brand alignment all merged.** The project is now in a documentation-maintenance phase. `docs/blog/zh/` is being rewritten as self-contained lessons.
+- **2026-06-07** — **MVP multi-model selection completed.** Per-conversation model picker, DB registry, health probes, `/admin/models` CRUD, per-request worker-env routing. Phase 4 stretch remains cross-provider failover and capability gating.
+- **2026-06-06** — **Phase C real-preview done and deployed live; roadmap reset.** Three deploy paths shipped. Slimming done except for GHCR push link.
+- **2026-06-04** — **Ask/Act + HITL merged.** Removed read-only `explore` tier; Ask pauses for approval, Act autonomous. R4 resolved by redesign.
+- **2026-06-02** — **Product positioning settled:** self-hosted private deployment for SMB teams, NOT public multi-tenant SaaS. Threat model = semi-trusted colleagues.
+- **2026-05-29** — **Strategy:** harden + borrow from Deep Agents; do not migrate/integrate. Repo made public for free branch protection.
 
 ## How to use this file
 
-- Update the **snapshot**, **Done/In progress/Next**, and **Decision log** as part of
-  finishing any meaningful task.
+- Update the **snapshot**, **Done/In progress/Next**, and **Decision log** as part of finishing any meaningful task.
 - When a phase's exit criteria are met, flip its row in the Phase tracker and in `ROADMAP.md`.
 - Keep difficulty tags on backlog items so work can be parcelled out by skill level.
