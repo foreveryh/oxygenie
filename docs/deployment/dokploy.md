@@ -32,6 +32,26 @@
 5. **Smoke test:** `GET /api/health` → `200` · `GET /` → `200` · `GET /ws/agent` → **`426`**
    (426 = the WebSocket server is alive and routed — the agent-chat lifeline).
 
+## Redeploying after pulling new code (avoid a race with CI)
+
+`redeploy` just re-pulls `${APP_TAG:-latest}` from GHCR — it does **not** build anything, and it
+does **not** wait for GitHub Actions. If you push to `main` and immediately hit "redeploy", the
+`build-image` workflow (multi-arch, ~4-5 min) is very likely still running, so you'll silently
+redeploy the **previous** image and think you shipped the new one. Always:
+
+1. Wait for `build-image` to go green for your commit (`gh run list --workflow build-image` or the
+   Actions tab).
+2. *Then* redeploy.
+3. Confirm with `curl https://<your-domain>/api/health` — `version` should equal your commit's full
+   SHA. `schemaVersion.inSync` should be `true` (it compares migrations shipped in the image against
+   migrations actually applied to your database — a quick way to tell "did my migration really run"
+   without shelling into the container).
+
+**Don't run Kin's own online-update sidecar (`updater`) here.** Dokploy already owns this stack's
+lifecycle; a second process independently running `docker compose up --force-recreate` against the
+same stack will fight Dokploy's own reconciliation. Keep `UPDATER_TOKEN` empty and use Dokploy's
+redeploy for updates, per the step above — this is the "what's limited" item below.
+
 ## What works / what's limited on Dokploy
 - ✅ **Works:** the site, sign-up/login, **Agent chat** (your model gateway), Postgres/Redis/MinIO/Meili,
   conversation-history search, file upload, skills/MCP.

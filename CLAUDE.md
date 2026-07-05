@@ -737,7 +737,7 @@ services:
 ```bash
 git pull
 # tag 按用途取：kin:local（常规）或 kin:<feature>-test（灰度）；下面 APP_TAG 必须与之一致。
-DOCKER_BUILDKIT=1 docker build --build-arg BUILD_SHA=$(git rev-parse --short HEAD) -t kin:local .   # 本机 arm64 即可
+DOCKER_BUILDKIT=1 docker build --build-arg BUILD_SHA=$(git rev-parse HEAD) -t kin:local .   # 本机 arm64 即可；用完整 sha（非 --short），与 CI 烤的一致，updater/健康检查按值精确比较
 # ⚠️ 改名(Kin)后必须 source **prod-merged.env**（全量），绝不要 source secrets.env——后者
 #    APP_NAME=oxygenie / APP_NAME_SANITIZED=oxygenie-cc2 是改名前残值，一 source 就把 app/worker
 #    重建到 oxygenie-cc2-private 网络、脱离 kin-private（Kin-redis/Kin-db 所在）→ ENOTFOUND redis = 全站宕机。
