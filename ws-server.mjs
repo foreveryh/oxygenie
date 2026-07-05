@@ -27,6 +27,7 @@ import { resolveEffectivePermission } from './src/lib/permission-tier.js';
 import { PreviewAuth } from './src/preview/auth.js';
 import { PreviewRuntime } from './src/preview/runtime.js';
 import { buildWorkerEnv } from './src/server/models/build-worker-env.js';
+import { openSecret } from './src/server/security/secret-box.js';
 import { isSyntheticTranscriptEntry } from './src/server/history/transcript-filter.js';
 import IORedis from 'ioredis';
 import { Queue as BullmqQueue } from 'bullmq';
@@ -1231,6 +1232,49 @@ async function resolveModelForChat(cookie, modelId) {
   }
 }
 
+// ── Registry v2: global variables for the worker env ─────────────────────────
+// Fetched sealed from the app (/api/models/worker-vars), opened here with
+// KIN_SECRET_KEY, short-TTL cached like the model-resolve path. Reserved prefixes
+// are re-checked here (the admin write path already blocks them) so a variable can
+// never shadow model routing or platform config even if the DB is edited directly.
+const WORKER_VARS_TTL_MS = Number(process.env.WORKER_VARS_TTL_MS) || 60_000;
+let workerVarsCache = null; // { vars: Array<{key, valueEncrypted}>, expiresAt: number }
+
+const GLOBAL_VAR_BLOCKED_PREFIXES = ['ANTHROPIC_', 'CLAUDE_', 'KIN_', 'OXY_', 'DATABASE_', 'POSTGRES_', 'REDIS_', 'BETTER_AUTH', 'NODE_', 'WS_', 'APP_', 'EXEC_', 'BASH_RUNNER_'];
+const GLOBAL_VAR_BLOCKED_EXACT = ['PATH', 'HOME', 'USER', 'SHELL', 'PWD', 'TMPDIR', 'PORT'];
+
+async function applyGlobalVars(cookie, workerEnv) {
+  try {
+    let cached = workerVarsCache;
+    if (!cached || cached.expiresAt <= Date.now()) {
+      const response = await fetch(`${APP_URL}/api/models/worker-vars`, {
+        headers: { cookie: cookie || '' },
+      });
+      if (!response.ok) {
+        console.error(`[WS Server] worker-vars fetch failed (${response.status}) — skipping global vars`);
+        return;
+      }
+      const body = await response.json();
+      cached = { vars: Array.isArray(body?.vars) ? body.vars : [], expiresAt: Date.now() + WORKER_VARS_TTL_MS };
+      workerVarsCache = cached;
+    }
+    for (const { key, valueEncrypted } of cached.vars) {
+      if (typeof key !== 'string' || !/^[A-Z][A-Z0-9_]*$/.test(key)) continue;
+      if (GLOBAL_VAR_BLOCKED_EXACT.includes(key) || GLOBAL_VAR_BLOCKED_PREFIXES.some((p) => key.startsWith(p))) {
+        console.error(`[WS Server] global var "${key}" hits the reserved blocklist — ignored`);
+        continue;
+      }
+      try {
+        workerEnv[key] = openSecret(valueEncrypted);
+      } catch (e) {
+        console.error(`[WS Server] global var "${key}" cannot be opened (${e instanceof Error ? e.message : e}) — ignored`);
+      }
+    }
+  } catch (error) {
+    console.error('[WS Server] applyGlobalVars error (non-fatal):', error);
+  }
+}
+
 async function handleChat(ws, prompt, resumeSessionId, options = {}) {
   const {
     silentInit = false,
@@ -1415,6 +1459,13 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     workerEnv.CLAUDE_HOME = claudeHome;
     workerEnv.HOME = claudeHome;  // Override HOME so os.homedir() returns user dir
     workerEnv.WORKER_CWD = workspacePath;  // Per-Session workspace
+
+    // Registry v2: admin-managed global variables (sealed over the internal API,
+    // opened here just-in-time). Applied BEFORE model routing so ANTHROPIC_* routing
+    // below always wins; the write path additionally blocks reserved prefixes, and
+    // applyGlobalVars re-checks as defense-in-depth. Failure is non-fatal (vars are
+    // a convenience — a chat must not die because the app endpoint hiccuped).
+    await applyGlobalVars(ws.cookie, workerEnv);
     if (config.apiKey) workerEnv.ANTHROPIC_API_KEY = config.apiKey;
     if (config.baseURL) {
       workerEnv.ANTHROPIC_BASE_URL = config.baseURL;
@@ -1612,6 +1663,11 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     const nodeArgs = WORKER_MAX_OLD_SPACE_MB
       ? [`--max-old-space-size=${WORKER_MAX_OLD_SPACE_MB}`, WORKER_PATH]
       : [WORKER_PATH];
+    // Registry v2 defense-in-depth: the worker gets resolved plaintext ANTHROPIC_*
+    // routing but never the master key — sealed DB credentials must stay openable
+    // only by the app/ws-server processes. (Sandboxed bash already builds a minimal
+    // env of its own, this guards the worker process itself.)
+    delete workerEnv.KIN_SECRET_KEY;
     worker = spawn('node', nodeArgs, {
       env: workerEnv,
       stdio: ['pipe', 'pipe', 'pipe'],

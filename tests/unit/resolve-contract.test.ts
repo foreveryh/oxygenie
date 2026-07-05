@@ -12,6 +12,8 @@ const sample = {
   connectionId: 'ark-coding',
   baseUrl: 'https://ark.cn-beijing.volces.com/api/coding',
   authStyle: 'bearer' as const,
+  protocol: 'anthropic' as const,
+  credentialEncrypted: null,
   tokenEnv: 'ARK_AUTH_TOKEN',
   anthropicVersion: '2023-06-01',
   customHeaders: null,
@@ -44,5 +46,16 @@ describe('resolveModelResponseSchema', () => {
     const parsed = resolveModelResponseSchema.parse({ ...sample, token: 'SECRET' } as Record<string, unknown>);
     expect('token' in parsed).toBe(false);
     expect(parsed.tokenEnv).toBe('ARK_AUTH_TOKEN'); // only the NAME is carried
+  });
+
+  it('v2: accepts a sealed credential + null tokenEnv (UI-created connection)', () => {
+    const parsed = resolveModelResponseSchema.parse({
+      ...sample,
+      credentialEncrypted: 'v1.aaaa.bbbb.cccc',
+      tokenEnv: null,
+      protocol: 'openai-compat',
+    });
+    expect(parsed.credentialEncrypted).toBe('v1.aaaa.bbbb.cccc');
+    expect(parsed.tokenEnv).toBeNull();
   });
 });

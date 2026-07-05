@@ -9,7 +9,7 @@
 import { db } from '~/db/client';
 import { modelDefinition, modelHealth } from '~/db/schema/model.schema';
 import { resolveModelMeta } from '~/server/models/registry';
-import { probeModelMeta } from '~/server/models/probe';
+import { probeConnection } from '~/server/models/probe';
 import { logger } from '~/lib/logger';
 
 /** Probe a single model and upsert its health row. */
@@ -19,7 +19,10 @@ export async function probeAndStore(modelId: string): Promise<void> {
     logger.warn('[probe] unknown model id, skipping', { modelId });
     return;
   }
-  const result = await probeModelMeta(meta);
+  // v2: protocol-aware — anthropic gets the real 1-token Messages probe; other
+  // protocols get a cheap authed model-list check (generation providers are never
+  // asked to actually generate).
+  const result = await probeConnection(meta);
   const now = new Date();
   await db
     .insert(modelHealth)

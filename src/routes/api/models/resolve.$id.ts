@@ -1,8 +1,11 @@
 /**
- * Internal model-resolve endpoint (PR4) — token-free metadata for ws-server routing.
+ * Internal model-resolve endpoint (PR4; v2 registry) — plaintext-free metadata for
+ * ws-server routing.
  *
  * GET /api/models/resolve/:id → the connection metadata ws-server needs to build the
- * worker env for the selected model. Returns NO secret (only `tokenEnv`, the name).
+ * worker env for the selected model. v2: may carry the SEALED credential blob
+ * (secret-box; undecryptable without the server-side KIN_SECRET_KEY) and/or the
+ * legacy `tokenEnv` NAME — never a plaintext token.
  * Cookie-authed like the other internal endpoints (src/routes/api/agent-sessions/*).
  * Response shape is validated against the shared contract (arch finding A1).
  */

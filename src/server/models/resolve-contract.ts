@@ -1,19 +1,20 @@
 /**
- * Internal-API contract for model resolution (PR4 / arch finding A1).
+ * Internal-API contract for model resolution (PR4 / arch finding A1; v2 registry).
  *
  * The shared, versioned shape exchanged across the ws-server ↔ web-app process
  * boundary. The web-app route validates its response against this schema; ws-server
- * (plain JS) validates the response it receives with the same field set. Defining the
- * contract once is the template the project's other untyped internal `/api/*`
- * endpoints should converge to (see 2026-06-architecture-observations.md §A1).
+ * (plain JS) consumes the same field set. Defining the contract once is the template
+ * the project's other untyped internal `/api/*` endpoints should converge to.
  *
- * NOTE: this carries `tokenEnv` (the env-var NAME) but NEVER a token value — the
- * secret stays in the backend process env and is read at spawn time.
+ * v2: adds `protocol` and the SEALED `credentialEncrypted` (secret-box format —
+ * useless without the server-side KIN_SECRET_KEY; ws-server opens it just-in-time in
+ * buildWorkerEnv). `tokenEnv` (env-var NAME) is now nullable. Plaintext tokens still
+ * NEVER cross the wire.
  */
 
 import { z } from 'zod';
 
-export const RESOLVE_MODEL_CONTRACT_VERSION = 1;
+export const RESOLVE_MODEL_CONTRACT_VERSION = 2;
 
 export const resolveModelResponseSchema = z.object({
   v: z.literal(RESOLVE_MODEL_CONTRACT_VERSION),
@@ -22,7 +23,9 @@ export const resolveModelResponseSchema = z.object({
   connectionId: z.string(),
   baseUrl: z.string().url(),
   authStyle: z.enum(['bearer', 'x-api-key']),
-  tokenEnv: z.string(),
+  protocol: z.enum(['anthropic', 'openai-compat', 'gemini', 'custom']),
+  credentialEncrypted: z.string().nullable(),
+  tokenEnv: z.string().nullable(),
   anthropicVersion: z.string(),
   customHeaders: z.record(z.string(), z.string()).nullable(),
   aliasOpus: z.string().nullable(),
@@ -34,3 +37,13 @@ export const resolveModelResponseSchema = z.object({
 });
 
 export type ResolveModelResponse = z.infer<typeof resolveModelResponseSchema>;
+
+/** Contract for /api/models/worker-vars — sealed global variables for worker spawn. */
+export const WORKER_VARS_CONTRACT_VERSION = 1;
+
+export const workerVarsResponseSchema = z.object({
+  v: z.literal(WORKER_VARS_CONTRACT_VERSION),
+  vars: z.array(z.object({ key: z.string(), valueEncrypted: z.string() })),
+});
+
+export type WorkerVarsResponse = z.infer<typeof workerVarsResponseSchema>;

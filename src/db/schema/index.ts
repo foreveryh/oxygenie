@@ -19,3 +19,4 @@ export * from './ocr-job.schema';
 export * from './update-status.schema';
 export * from './perf-sample.schema';
 export * from './system-setting.schema';
+export * from './global-variable.schema';

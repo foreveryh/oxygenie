@@ -19,6 +19,7 @@ export type AdminSection =
   | 'usage'
   | 'billing'
   | 'models'
+  | 'variables'
   | 'skills'
   | 'a2composer'
   | 'health'
@@ -100,6 +101,13 @@ export const adminNavGroups: AdminNavGroup[] = [
         description: 'Model routing and health',
         icon: RiRobot2Line,
         path: '/admin/models',
+      },
+      {
+        section: 'variables',
+        label: '全局变量',
+        description: 'MCP / 工具用的 API key 与环境变量',
+        icon: RiShieldKeyholeLine,
+        path: '/admin/variables',
       },
       {
         section: 'skills',

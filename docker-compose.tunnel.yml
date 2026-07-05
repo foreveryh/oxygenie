@@ -222,6 +222,7 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-}
       PARSER_SIDECAR_URL: ${PARSER_SIDECAR_URL:-http://parser:7800}
       ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      KIN_SECRET_KEY: ${KIN_SECRET_KEY:-}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
       # OCR module (O1/O2): doubao default reuses ANTHROPIC_AUTH_TOKEN/BASE_URL; mimo uses OpenRouter.
       OCR_PROVIDER: ${OCR_PROVIDER:-}
@@ -337,6 +338,7 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       # Optional: Zhipu key — only for the GLM image tool + Zhipu MCP servers (unset if unused)
       ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      KIN_SECRET_KEY: ${KIN_SECRET_KEY:-}
       # Claude Agent SDK configuration — ARK gateway uses Bearer (ANTHROPIC_AUTH_TOKEN);
       # do NOT set ANTHROPIC_API_KEY (it would make the SDK use x-api-key instead of Bearer).
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:?}

@@ -13,14 +13,24 @@ import { z } from 'zod';
 import { auth } from '~/server/auth.server';
 import {
   listModelsAdmin,
+  listConnectionsAdmin,
   setModelEnabled,
   setDefaultModelById,
+  setDefaultModelFor,
+  listDefaultSlots,
+  setConnectionCredential,
+  testConnection,
   upsertConnection,
   deleteConnection,
   upsertModel,
   deleteModel,
+  MODEL_CAPABILITIES,
   type AdminModelRow,
+  type AdminConnectionRow,
+  type DefaultSlotRow,
 } from '~/server/models/registry';
+import { PROVIDER_CATALOG, type CatalogProvider } from '~/server/models/provider-catalog';
+import { hasSecretKey } from '~/server/security/secret-box';
 import { AUTH_STYLES } from '~/server/models/model-config';
 import { systemQueue } from '~/jobs/queues';
 
@@ -75,12 +85,16 @@ export const reprobeModelsFn = createServerFn({ method: 'POST' })
 
 const idRe = /^[a-zA-Z0-9._/-]+$/;
 
+const PROTOCOLS = ['anthropic', 'openai-compat', 'gemini', 'custom'] as const;
+
 const connectionInputSchema = z.object({
   id: z.string().min(1).regex(idRe),
   label: z.string().min(1),
   baseUrl: z.string().url(),
   authStyle: z.enum(AUTH_STYLES),
-  tokenEnv: z.string().min(1),
+  protocol: z.enum(PROTOCOLS).optional(),
+  // v2: optional — UI-created connections carry a DB credential instead.
+  tokenEnv: z.string().nullish(),
   anthropicVersion: z.string().optional(),
   aliasOpus: z.string().nullish(),
   aliasSonnet: z.string().nullish(),
@@ -93,6 +107,7 @@ const modelInputSchema = z.object({
   label: z.string().min(1),
   connectionId: z.string().min(1),
   model: z.string().min(1),
+  capabilities: z.array(z.enum(MODEL_CAPABILITIES)).optional(),
   tags: z.array(z.string()).optional(),
   enabled: z.boolean().optional(),
 });
@@ -128,3 +143,65 @@ export const deleteModelFn = createServerFn({ method: 'POST' })
     await deleteModel(data.id);
     return { ok: true };
   });
+
+// ── Registry v2 ───────────────────────────────────────────────────────────────
+
+/** Connections (even model-less), credential status, catalog, defaults — one loader. */
+export const listRegistryAdminFn = createServerFn({ method: 'GET' }).handler(
+  async (): Promise<{
+    connections: AdminConnectionRow[];
+    models: AdminModelRow[];
+    defaults: DefaultSlotRow[];
+    catalog: CatalogProvider[];
+    secretKeyConfigured: boolean;
+  }> => {
+    await requireAdmin();
+    const [connections, models, defaults] = await Promise.all([
+      listConnectionsAdmin(),
+      listModelsAdmin(),
+      listDefaultSlots(),
+    ]);
+    return { connections, models, defaults, catalog: PROVIDER_CATALOG, secretKeyConfigured: hasSecretKey() };
+  },
+);
+
+/** Store (or clear with credential=null) a connection's API key. Plaintext dies here. */
+export const setConnectionCredentialFn = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({ id: z.string().min(1), credential: z.string().min(1).nullable() }))
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    await setConnectionCredential(data.id, data.credential);
+    return { ok: true };
+  });
+
+/** Immediate connection test (admin "测试连接" button). */
+export const testConnectionFn = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({ connectionId: z.string().min(1), modelId: z.string().optional() }))
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    return testConnection(data.connectionId, data.modelId ?? null);
+  });
+
+/** Set/clear a per-capability default slot (global when projectId omitted). */
+export const setDefaultSlotFn = createServerFn({ method: 'POST' })
+  .inputValidator(
+    z.object({
+      capability: z.enum(MODEL_CAPABILITIES),
+      modelId: z.string().min(1).nullable(),
+      projectId: z.string().uuid().nullish(),
+    }),
+  )
+  .handler(async ({ data }) => {
+    await requireAdmin();
+    await setDefaultModelFor(data.capability, data.modelId, data.projectId ?? null);
+    return { ok: true };
+  });
+
+/** Projects for the per-project override picker (admin sees all). */
+export const listProjectsAdminFn = createServerFn({ method: 'GET' }).handler(async () => {
+  await requireAdmin();
+  const { db } = await import('~/db/db-config');
+  const { project } = await import('~/db/schema');
+  const rows = await db.select({ id: project.id, name: project.name }).from(project);
+  return rows.sort((a, b) => a.name.localeCompare(b.name));
+});

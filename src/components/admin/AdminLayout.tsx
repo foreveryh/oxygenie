@@ -28,6 +28,7 @@ export function AdminLayout() {
     if (pathname.startsWith('/admin/users')) return 'users';
     if (pathname.startsWith('/admin/usage')) return 'usage';
     if (pathname.startsWith('/admin/models')) return 'models';
+    if (pathname.startsWith('/admin/variables')) return 'variables';
     if (pathname.startsWith('/admin/a2composer')) return 'a2composer';
     if (pathname.startsWith('/admin/skills')) return 'skills';
     if (pathname.startsWith('/admin/updates')) return 'updates';

@@ -20,8 +20,11 @@ export type ProbeResult = { health: ProbeHealth; probeError: ProbeError; latency
 export interface ProbeInput {
   baseUrl: string;
   authStyle: 'bearer' | 'x-api-key';
-  tokenEnv: string;
+  /** v2: sealed DB credential — preferred over tokenEnv when present. */
+  credentialEncrypted?: string | null;
+  tokenEnv?: string | null;
   model: string;
+  protocol?: 'anthropic' | 'openai-compat' | 'gemini' | 'custom';
   anthropicVersion?: string;
   customHeaders?: Record<string, string> | null;
 }
@@ -42,14 +45,84 @@ export function classifyProbeStatus(status: number, latencyMs: number): ProbeRes
   return { health: 'unhealthy', probeError: `http_${status}`, latencyMs };
 }
 
-/** Probe one model's connection. Reads the token from env[tokenEnv] (never logged). */
+/**
+ * Resolve the probe token: sealed DB credential first, env[tokenEnv] fallback.
+ * Returns null when neither yields a usable value (classified as 'auth').
+ */
+async function resolveProbeToken(meta: ProbeInput, env: NodeJS.ProcessEnv): Promise<string | null> {
+  if (meta.credentialEncrypted) {
+    try {
+      const { openSecret } = await import('~/server/security/secret-box');
+      return openSecret(meta.credentialEncrypted, env);
+    } catch {
+      return null; // missing/rotated KIN_SECRET_KEY → credential unusable
+    }
+  }
+  if (meta.tokenEnv) {
+    const v = env[meta.tokenEnv];
+    if (v && String(v).trim()) return String(v);
+  }
+  return null;
+}
+
+/**
+ * Protocol-aware probe dispatch (v2). Anthropic → real 1-token Messages call (the
+ * exact request the SDK makes); openai-compat/gemini/custom → cheap authed model-list
+ * (K6: generation providers are auth-checked, never asked to generate).
+ */
+export async function probeConnection(meta: ProbeInput, opts: ProbeOptions = {}): Promise<ProbeResult> {
+  const protocol = meta.protocol ?? 'anthropic';
+  if (protocol === 'anthropic') return probeModelMeta(meta, opts);
+
+  const env = opts.env ?? process.env;
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? 15000;
+  const token = await resolveProbeToken(meta, env);
+  if (!token) return { health: 'unhealthy', probeError: 'auth', latencyMs: 0 };
+
+  const base = meta.baseUrl.replace(/\/+$/, '');
+  let url: string;
+  const headers: Record<string, string> = { ...meta.customHeaders };
+  if (protocol === 'gemini') {
+    // Gemini lists models with the key as a query param.
+    url = `${base}/v1beta/models?key=${encodeURIComponent(token)}&pageSize=1`;
+  } else {
+    // openai-compat + custom: GET {base}/models with the configured auth style.
+    url = `${base}/models`;
+    if (meta.authStyle === 'x-api-key') headers['x-api-key'] = token;
+    else headers['authorization'] = `Bearer ${token}`;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = Date.now();
+  try {
+    const res = await fetchImpl(url, { method: 'GET', headers, signal: controller.signal });
+    const result = classifyProbeStatus(res.status, Date.now() - started);
+    // A 404 on /models means the endpoint shape differs, not that the model is bad —
+    // downgrade to healthy-unknown-shape? No: report as-is but reclassify 'model' →
+    // generic http_404 so the UI doesn't claim "model rejected" for a list endpoint.
+    if (result.probeError === 'model') return { ...result, probeError: `http_${res.status}` };
+    return result;
+  } catch (error) {
+    const latencyMs = Date.now() - started;
+    if (error instanceof Error && error.name === 'AbortError') {
+      return { health: 'unhealthy', probeError: 'timeout', latencyMs };
+    }
+    return { health: 'unhealthy', probeError: 'network', latencyMs };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Probe one model's connection (Anthropic Messages). Token never logged. */
 export async function probeModelMeta(meta: ProbeInput, opts: ProbeOptions = {}): Promise<ProbeResult> {
   const env = opts.env ?? process.env;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 15000;
 
-  const token = env[meta.tokenEnv];
-  if (!token || !String(token).trim()) {
+  const token = await resolveProbeToken(meta, env);
+  if (!token) {
     return { health: 'unhealthy', probeError: 'auth', latencyMs: 0 };
   }
 

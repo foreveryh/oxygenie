@@ -217,6 +217,7 @@ services:
       EMBED_PROVIDER: ${EMBED_PROVIDER:-}
       PARSER_SIDECAR_URL: ${PARSER_SIDECAR_URL:-http://parser:7800}
       ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      KIN_SECRET_KEY: ${KIN_SECRET_KEY:-}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
     extra_hosts:
       - 'host.docker.internal:host-gateway'
@@ -281,6 +282,7 @@ services:
       RAG_ENABLED: ${RAG_ENABLED:-}
       # Zhipu key — GLM image tool + Zhipu MCP servers + RAG embedding/rerank (R0)
       ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      KIN_SECRET_KEY: ${KIN_SECRET_KEY:-}
       PARSER_SIDECAR_URL: ${PARSER_SIDECAR_URL:-http://parser:7800}
       # Claude Agent SDK configuration
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?}

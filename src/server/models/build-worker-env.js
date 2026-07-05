@@ -6,8 +6,10 @@
  *
  * Given a model's connection metadata + the source env, returns a NEW env object
  * with the ANTHROPIC_* vars set to route the spawned Claude Agent SDK child to that
- * connection + model. The secret is read from `sourceEnv[meta.tokenEnv]` — tokens
- * never travel in metadata/DB/UI.
+ * connection + model. The secret comes from the SEALED `meta.credentialEncrypted`
+ * (v2 — opened here with KIN_SECRET_KEY, plaintext exists only in this process) or,
+ * as fallback, from `sourceEnv[meta.tokenEnv]` (legacy env-name reference). Plaintext
+ * tokens never travel in metadata/DB/UI.
  *
  * SDK 0.2.112 contract (see research/2026-06-multi-model-context-pack.md §C):
  *  - auth via env only (no query() apiKey/baseUrl option);
@@ -19,25 +21,41 @@
  * @typedef {Object} ModelRouteMeta
  * @property {string} baseUrl
  * @property {'bearer'|'x-api-key'} authStyle
- * @property {string} tokenEnv     - NAME of the env var holding the token
+ * @property {string|null=} credentialEncrypted - sealed secret-box blob (v2, wins over tokenEnv)
+ * @property {string|null=} tokenEnv - NAME of the env var holding the token (legacy/fallback)
  * @property {string} model        - gateway model string (e.g. "glm-5.1")
  * @property {Record<string,string>=} customHeaders
  * @property {string=} aliasOpus
  * @property {string=} aliasSonnet
  * @property {string=} aliasHaiku
  * @property {string=} aliasSubagent
- *
+ */
+
+import { openSecret } from '../security/secret-box.js';
+
+/**
  * @param {ModelRouteMeta} meta
  * @param {Record<string,string|undefined>} sourceEnv
  * @returns {Record<string,string|undefined>} a new env object
  */
 export function buildWorkerEnv(meta, sourceEnv) {
-  if (!meta || !meta.baseUrl || !meta.tokenEnv || !meta.model) {
-    throw new Error('buildWorkerEnv: incomplete model metadata (need baseUrl, tokenEnv, model)');
+  if (!meta || !meta.baseUrl || !meta.model || (!meta.tokenEnv && !meta.credentialEncrypted)) {
+    throw new Error('buildWorkerEnv: incomplete model metadata (need baseUrl, model, and a credential or tokenEnv)');
   }
-  const token = sourceEnv?.[meta.tokenEnv];
+  let token = null;
+  if (meta.credentialEncrypted) {
+    // Sealed DB credential wins. openSecret throws a clear message on a missing or
+    // rotated KIN_SECRET_KEY — surface it as-is (admin-actionable).
+    token = openSecret(meta.credentialEncrypted, sourceEnv);
+  } else {
+    token = sourceEnv?.[meta.tokenEnv];
+  }
   if (!token || !String(token).trim()) {
-    throw new Error(`buildWorkerEnv: token env "${meta.tokenEnv}" is not set on the server`);
+    throw new Error(
+      meta.tokenEnv
+        ? `buildWorkerEnv: token env "${meta.tokenEnv}" is not set on the server`
+        : 'buildWorkerEnv: connection has no usable credential',
+    );
   }
 
   const env = { ...sourceEnv };

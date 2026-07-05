@@ -217,6 +217,14 @@ ANTHROPIC_DEFAULT_OPUS_MODEL=<model>
 ANTHROPIC_DEFAULT_HAIKU_MODEL=<model>        # 如 doubao-seed-2.0-lite
 CLAUDE_CODE_SUBAGENT_MODEL=<model>
 
+# 模型注册表 v2（2026-07-05）：模型（对话/识图/生图/生视频/向量）、凭据、全局变量
+# 全程可在 UI 管理（/admin/models、/admin/variables）——admin 粘贴的 API key 用
+# AES-256-GCM 加密落库，主密钥每部署生成一次（openssl rand -hex 32）、勿随意轮换
+# （轮换后 DB 已存凭据需重新粘贴）。不设则 UI 粘贴入口禁用、仅 tokenEnv(.env) 连接可用。
+# ⚠️ OXY_MODELS_SEED 语义已改：仅在 model_connection 表为空时整体插入；表非空后
+# DB/UI 是唯一真相源（旧「改默认要 DB+env 两处」的坑已废）。
+KIN_SECRET_KEY=<openssl rand -hex 32>
+
 # WebSocket 服务器
 WS_PORT=3001
 APP_URL=http://localhost:5000

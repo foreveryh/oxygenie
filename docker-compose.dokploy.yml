@@ -182,6 +182,8 @@ services:
       S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
       S3_BUCKET: ${MINIO_BUCKET:?}
+      # Registry v2: master key for sealed model credentials (probe worker decrypts)
+      KIN_SECRET_KEY: ${KIN_SECRET_KEY:-}
       # Job queue + schedules
       REDIS_URL: redis://redis:6379
       BULLMQ_PREFIX: ${BULLMQ_PREFIX:-oxygenie}
@@ -286,6 +288,7 @@ services:
       RAG_ENABLED: ${RAG_ENABLED:-}
       # Optional: Zhipu key — only for the GLM image tool + Zhipu MCP servers (unset if unused)
       ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      KIN_SECRET_KEY: ${KIN_SECRET_KEY:-}
       # Claude Agent SDK configuration — ARK gateway uses Bearer (ANTHROPIC_AUTH_TOKEN);
       # do NOT set ANTHROPIC_API_KEY (it would make the SDK use x-api-key instead of Bearer).
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:?}

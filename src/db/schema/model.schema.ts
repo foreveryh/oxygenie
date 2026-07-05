@@ -1,18 +1,30 @@
 /**
- * Multi-model schema (model switching, PR1 of the full version)
+ * Multi-model schema (registry v2 — unified model + capability registry).
  *
  * DB = runtime source of truth for which models/connections exist and are enabled;
- * seeded on first boot from `.env` (OXY_MODELS_SEED) and editable by admins in
- * `/admin/models`. **Secrets are NEVER stored here** — a connection only records the
- * NAME of the env var holding its token (`tokenEnv`); the value lives in `.env` and is
- * resolved server-side at spawn time. Health is produced by the 6h backend probe.
+ * seeded ONLY when the connection table is empty (v2 semantics — the UI is the source
+ * of truth thereafter) and editable by admins in `/admin/models`.
  *
- * See docs/project/prd/2026-06-multi-model-switching-prd.md (rev.3) §3 and
- * docs/project/research/2026-06-multi-model-context-pack.md.
+ * Credentials (v2): a connection's secret is EITHER
+ *   - `credentialEncrypted` — AES-256-GCM sealed via KIN_SECRET_KEY (admin pastes the
+ *     key in the UI; see src/server/security/secret-box.js), OR
+ *   - `tokenEnv` — legacy NAME of the env var holding the token (.env deployments).
+ * Resolution order: DB credential first, env fallback. Plaintext never leaves the
+ * server processes (UI gets a mask; the internal resolve endpoint ships the sealed
+ * blob which ws-server opens with its own KIN_SECRET_KEY).
+ *
+ * Capabilities (v2): a model declares what it can do — 'chat' (Agent runtime,
+ * anthropic-protocol connections only), 'vision', 'image', 'video', 'embedding'.
+ * Defaults are per-capability slots in `model_default`, overridable per project.
+ *
+ * See docs/project/prd/2026-06-multi-model-switching-prd.md (rev.3, v1) and the
+ * coordination-repo PRD 2026-07-05-模型注册表v2与全局变量-PRD.md (v2).
  */
 
-import { pgTable, text, integer, boolean, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, text, integer, boolean, jsonb, pgEnum, uuid, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { createdAt, updatedAt, timestamptz } from './_shared';
+import { project } from './project.schema';
 
 // How the connection authenticates to its Anthropic-compatible gateway.
 // bearer  → ANTHROPIC_AUTH_TOKEN (Authorization: Bearer) — ARK / gateways
@@ -25,6 +37,22 @@ export const modelAuthStyleEnum = pgEnum('model_auth_style', ['bearer', 'x-api-k
 // collide with the enum (Postgres error 42710). Hence `model_health_status`.
 export const modelHealthEnum = pgEnum('model_health_status', ['healthy', 'unhealthy', 'unknown']);
 
+// Wire protocol of a connection. 'anthropic' is the ONLY protocol usable for the
+// Agent runtime ('chat' capability) — SDK 0.2.112 + ARK constraint (kin CLAUDE.md §3).
+// The rest serve vision / image / video / embedding via direct REST.
+export const modelProtocolEnum = pgEnum('model_protocol', [
+  'anthropic',
+  'openai-compat',
+  'gemini',
+  'custom',
+]);
+
+// What a model can do. 'chat' = Agent conversation runtime; the others are direct
+// REST capabilities consumed by OCR (vision), canvas/generation (image, video) and
+// RAG (embedding).
+export const MODEL_CAPABILITIES = ['chat', 'vision', 'image', 'video', 'embedding'] as const;
+export type ModelCapability = (typeof MODEL_CAPABILITIES)[number];
+
 // ── model_connection ─ an Anthropic-compatible endpoint + one credential (an account)
 export const modelConnection = pgTable('model_connection', {
   // Stable key, e.g. "ark-coding" (used as FK target; not user-facing).
@@ -35,9 +63,13 @@ export const modelConnection = pgTable('model_connection', {
   // (the SDK reads ANTHROPIC_BASE_URL = this value).
   baseUrl: text('base_url').notNull(),
   authStyle: modelAuthStyleEnum('auth_style').notNull().default('bearer'),
-  // NAME of the env var holding the secret (e.g. "ARK_AUTH_TOKEN"). The value is
-  // never stored — resolved from process.env on the server only.
-  tokenEnv: text('token_env').notNull(),
+  protocol: modelProtocolEnum('protocol').notNull().default('anthropic'),
+  // v2: sealed credential (secret-box format) pasted in the admin UI. Preferred over
+  // tokenEnv when set. Never returned to clients in plaintext.
+  credentialEncrypted: text('credential_encrypted'),
+  // Legacy/fallback: NAME of the env var holding the secret (e.g. "ARK_AUTH_TOKEN").
+  // Nullable in v2 — UI-created connections may carry only credentialEncrypted.
+  tokenEnv: text('token_env'),
   anthropicVersion: text('anthropic_version').notNull().default('2023-06-01'),
   // Optional extra headers for gateway routing → ANTHROPIC_CUSTOM_HEADERS.
   customHeaders: jsonb('custom_headers').$type<Record<string, string> | null>(),
@@ -62,6 +94,8 @@ export const modelDefinition = pgTable('model_definition', {
     .references(() => modelConnection.id, { onDelete: 'cascade' }),
   // The model string the gateway expects, e.g. "glm-5.1".
   model: text('model').notNull(),
+  // v2: what this model can do (see MODEL_CAPABILITIES). Legacy rows default to chat.
+  capabilities: jsonb('capabilities').$type<ModelCapability[]>().default(['chat']).notNull(),
   tags: jsonb('tags').$type<string[]>().default([]).notNull(),
   enabled: boolean('enabled').notNull().default(true),
   isDefault: boolean('is_default').notNull().default(false),
@@ -82,9 +116,36 @@ export const modelHealth = pgTable('model_health', {
   latencyMs: integer('latency_ms'),
 });
 
+// ── model_default ─ per-capability default slots, overridable per project (v2) ──
+// One row per (capability, global) + one per (capability, project). Resolution:
+// project row → global row → legacy isDefault (chat only) → first enabled with the
+// capability. Partial unique indexes because Postgres treats NULLs as distinct.
+export const modelDefault = pgTable(
+  'model_default',
+  {
+    capability: text('capability').$type<ModelCapability>().notNull(),
+    // NULL → the global slot. Cascades away with the project.
+    projectId: uuid('project_id').references(() => project.id, { onDelete: 'cascade' }),
+    modelId: text('model_id')
+      .notNull()
+      .references(() => modelDefinition.id, { onDelete: 'cascade' }),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('model_default_global_uq')
+      .on(t.capability)
+      .where(sql`${t.projectId} IS NULL`),
+    uniqueIndex('model_default_project_uq')
+      .on(t.capability, t.projectId)
+      .where(sql`${t.projectId} IS NOT NULL`),
+  ],
+);
+
 export type ModelConnection = typeof modelConnection.$inferSelect;
 export type NewModelConnection = typeof modelConnection.$inferInsert;
 export type ModelDefinition = typeof modelDefinition.$inferSelect;
 export type NewModelDefinition = typeof modelDefinition.$inferInsert;
 export type ModelHealthRow = typeof modelHealth.$inferSelect;
 export type NewModelHealthRow = typeof modelHealth.$inferInsert;
+export type ModelDefaultRow = typeof modelDefault.$inferSelect;
+export type ModelProtocol = (typeof modelProtocolEnum.enumValues)[number];
