@@ -205,9 +205,11 @@ services:
     networks:
       - private
 
-  # Main application (Nitro + WebSocket server)
-  # Dokploy builds the image locally to include VITE_* environment variables
-  # Build args are passed from Dokploy's environment configuration
+  # Main application (Nitro + WebSocket server). Pulls the prebuilt multi-arch GHCR image
+  # (see x-app-image anchor above) — Dokploy does NOT build this locally. `redeploy` just
+  # re-pulls ${APP_TAG:-latest}; if you push new code first, wait for the `build-image`
+  # GitHub Actions workflow to finish (it publishes the new tag) before redeploying,
+  # otherwise you'll re-pull the previous build (see docs/deployment/dokploy.md).
   app:
     image: *app_image
     pull_policy: always

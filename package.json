@@ -2,6 +2,7 @@
   "name": "kin",
   "description": "Kin — self-hosted, single-org Claude-Agent workspace (based on Constructa scaffold)",
   "repository": "https://github.com/deeptoai-com/kin",
+  "license": "Apache-2.0",
   "private": true,
   "sideEffects": false,
   "type": "module",
