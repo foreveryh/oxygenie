@@ -174,10 +174,42 @@ export function ChatComposer({
   const canvasSelectedAssetIds = useCanvasStore((s) => s.selectedAssetIds);
   const canvasAssets = useCanvasStore((s) => s.assets);
   const setCanvasSelectedAssetIds = useCanvasStore((s) => s.setSelectedAssetIds);
+  const pendingComposerCommand = useCanvasStore((s) => s.pendingComposerCommand);
+  const setPendingComposerCommand = useCanvasStore((s) => s.setPendingComposerCommand);
   const composerText = useAssistantState(({ composer }) => composer.text);
   const composerRunConfig = useAssistantState(({ composer }) => composer.runConfig);
   const composerIsEditing = useAssistantState(({ composer }) => composer.isEditing);
   const isRunning = useThread((state) => state.isRunning);
+
+  // F5.1/F4.x (Animate button, in-place mini composer): consume a cross-tree command
+  // from node-toolbar.tsx (see canvas-store.ts's pendingComposerCommand doc). Builds
+  // canvas refs directly from the command's assetIds — deliberately does NOT go
+  // through canvasSelectedAssetIds/handleSend's own staging block, since that reads
+  // reactive state that may not have settled yet if a caller just also changed the
+  // selection in the same tick (a plain useEffect firing post-commit sidesteps that
+  // race entirely, at the cost of a small duplication of the refs-building logic).
+  useEffect(() => {
+    if (!canvasMode || !pendingComposerCommand) return;
+    if (isRunning) return; // re-fires once isRunning flips back to false — command stays staged
+    const { assetIds, text } = pendingComposerCommand;
+    const refs: CanvasRefDescriptor[] = assetIds
+      .map((id) => canvasAssets[id])
+      .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video') && !!a.relPath)
+      .map((a) => ({
+        relPath: a.relPath as string,
+        type: a.type as 'image' | 'video',
+        width: a.width,
+        height: a.height,
+        ...(a.type === 'video' && a.meta?.durationSec !== undefined ? { durationSec: a.meta.durationSec } : {}),
+      }));
+    stagePendingCanvasRefs(refs.length > 0 ? refs : null);
+    setCanvasSelectedAssetIds([]);
+    setPendingComposerCommand(null);
+    api.composer().setText(text);
+    onSend?.();
+    queueMicrotask(() => api.composer().send());
+  }, [canvasMode, pendingComposerCommand, isRunning, canvasAssets, api, setCanvasSelectedAssetIds, setPendingComposerCommand, onSend]);
+
   // Persist attachments against the SAME message list the thread renders from
   // (the chat-session store, whose user-message id is minted in route `onNew`).
   // The assistant-ui runtime thread (`useThread`) mints a *different* id, so
@@ -454,8 +486,14 @@ export function ChatComposer({
       if (canvasMode && canvasSelectedAssetIds.length > 0) {
         const refs: CanvasRefDescriptor[] = canvasSelectedAssetIds
           .map((id) => canvasAssets[id])
-          .filter((a): a is NonNullable<typeof a> => Boolean(a) && a.type === 'image')
-          .map((a) => ({ relPath: a.relPath as string, type: 'image', width: a.width, height: a.height }));
+          .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video') && !!a.relPath)
+          .map((a) => ({
+            relPath: a.relPath as string,
+            type: a.type as 'image' | 'video',
+            width: a.width,
+            height: a.height,
+            ...(a.type === 'video' && a.meta?.durationSec !== undefined ? { durationSec: a.meta.durationSec } : {}),
+          }));
         stagePendingCanvasRefs(refs);
         // 发送后清空选中 (impl spec §6.3, matches the reference product's behavior).
         setCanvasSelectedAssetIds([]);

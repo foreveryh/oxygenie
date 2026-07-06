@@ -9,6 +9,9 @@
  * mention-token/canvas-node/sandbox-file all share the same UUID). Width/height come
  * from the adapter's known generation params (requested aspect ratio), not server-side
  * file probing — see task notes on why `sharp` isn't wired up for this slice.
+ *
+ * `type` is derived from the task's `kind` (t2i/i2i → image; t2v/i2v/v2v → video), set
+ * once at task-creation time (tasks.ts) — the completion payload never has to repeat it.
  */
 
 import { createFileRoute } from '@tanstack/react-router';
@@ -27,7 +30,7 @@ export const Route = createFileRoute('/api/internal/canvas/tasks/$taskId/complet
         const body = await request.json();
         const { status, files, error } = body as {
           status: 'done' | 'failed';
-          files?: Array<{ id: string; relPath: string; width: number; height: number }>;
+          files?: Array<{ id: string; relPath: string; width: number; height: number; durationSec?: number }>;
           error?: string;
         };
 
@@ -51,6 +54,7 @@ export const Route = createFileRoute('/api/internal/canvas/tasks/$taskId/complet
         }
 
         const prompt = task.params?.prompt;
+        const assetType = task.kind === 't2v' || task.kind === 'i2v' || task.kind === 'v2v' ? 'video' : 'image';
         const reservedSlots = task.reservedSlots || [];
         const fileList = files || [];
         const createdAssets = [];
@@ -64,9 +68,16 @@ export const Route = createFileRoute('/api/internal/canvas/tasks/$taskId/complet
             .values({
               id: file.id,
               canvasId: task.canvasId,
-              type: 'image',
+              type: assetType,
               relPath: file.relPath,
-              meta: { width: file.width, height: file.height, prompt, model: task.modelSlug ?? undefined, origin: 'agent' },
+              meta: {
+                width: file.width,
+                height: file.height,
+                prompt,
+                model: task.modelSlug ?? undefined,
+                origin: 'agent',
+                ...(file.durationSec !== undefined ? { durationSec: file.durationSec } : {}),
+              },
               posX: origin.posX,
               posY: origin.posY,
               width: size.width,

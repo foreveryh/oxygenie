@@ -15,11 +15,13 @@ import { useServerFn } from '@tanstack/react-start';
 import { useCanvasStore } from './canvas-store';
 import { useCanvasChannel } from './use-canvas-channel';
 import { ImageNode, type ImageNodeData } from './nodes/image-node';
+import { VideoNode, type VideoNodeData } from './nodes/video-node';
 import { PlaceholderNode, type PlaceholderNodeData } from './nodes/placeholder-node';
 import { CanvasNodeToolbar } from './nodes/node-toolbar';
 import { updateAssetPos, type CanvasAssetDTO } from '~/server/function/canvas.server';
 
-const nodeTypes = { image: ImageNode, placeholder: PlaceholderNode };
+const nodeTypes = { image: ImageNode, video: VideoNode, placeholder: PlaceholderNode };
+const DRAGGABLE_ASSET_TYPES = new Set(['image', 'video']);
 const POS_DEBOUNCE_MS = 300; // impl spec §5.6/§6.4: debounce position persistence
 
 interface CanvasRootProps {
@@ -28,9 +30,8 @@ interface CanvasRootProps {
 }
 
 /**
- * Canvas Agent (D5) — ReactFlow assembly. Image-only in this slice (video/text/
- * placeholder-with-parameter-bar/selection/toolbar all deferred — see spec's reduced
- * M1 scope for the historical-events demo).
+ * Canvas Agent (D5/M2) — ReactFlow assembly. Image + video nodes; text nodes and
+ * placeholder-with-parameter-bar are still deferred (M4 polish).
  */
 export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
   const setInitialAssets = useCanvasStore((s) => s.setInitialAssets);
@@ -63,7 +64,7 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
   // while the debounced persist is in flight, then the server write catches up.
   const onNodeDragStop: OnNodeDrag = useCallback(
     (_event, node) => {
-      if (node.type !== 'image') return;
+      if (!node.type || !DRAGGABLE_ASSET_TYPES.has(node.type)) return;
       const asset = assets[node.id];
       if (!asset) return;
       upsertAsset({ ...asset, posX: node.position.x, posY: node.position.y });
@@ -77,29 +78,50 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
   // back out of it via the node's `selected` field below.
   const onSelectionChange: OnSelectionChangeFunc = useCallback(
     ({ nodes: selectedNodes }) => {
-      setSelectedAssetIds(selectedNodes.filter((n) => n.type === 'image').map((n) => n.id));
+      setSelectedAssetIds(
+        selectedNodes.filter((n) => n.type && DRAGGABLE_ASSET_TYPES.has(n.type)).map((n) => n.id)
+      );
     },
     [setSelectedAssetIds]
   );
 
   const nodes: Node[] = useMemo(() => {
     const assetNodes: Node[] = Object.values(assets)
-      .filter((a): a is typeof a & { relPath: string } => a.type === 'image' && !!a.relPath)
-      .map((a) => ({
-        id: a.id,
-        type: 'image',
-        position: { x: a.posX, y: a.posY },
-        data: {
-          canvasId,
-          relPath: a.relPath,
-          width: a.width,
-          height: a.height,
-          prompt: a.meta?.prompt,
-        } satisfies ImageNodeData,
-        draggable: true,
-        selectable: true,
-        selected: selectedAssetIds.includes(a.id),
-      }));
+      .filter((a): a is typeof a & { relPath: string } => DRAGGABLE_ASSET_TYPES.has(a.type) && !!a.relPath)
+      .map((a) =>
+        a.type === 'video'
+          ? {
+              id: a.id,
+              type: 'video',
+              position: { x: a.posX, y: a.posY },
+              data: {
+                canvasId,
+                relPath: a.relPath,
+                width: a.width,
+                height: a.height,
+                prompt: a.meta?.prompt,
+                durationSec: a.meta?.durationSec,
+              } satisfies VideoNodeData,
+              draggable: true,
+              selectable: true,
+              selected: selectedAssetIds.includes(a.id),
+            }
+          : {
+              id: a.id,
+              type: 'image',
+              position: { x: a.posX, y: a.posY },
+              data: {
+                canvasId,
+                relPath: a.relPath,
+                width: a.width,
+                height: a.height,
+                prompt: a.meta?.prompt,
+              } satisfies ImageNodeData,
+              draggable: true,
+              selectable: true,
+              selected: selectedAssetIds.includes(a.id),
+            }
+      );
 
     // One placeholder per in-flight task at its first reserved slot (simplification:
     // this demo's generate_image calls are single-image, so 1 box per task is
@@ -117,6 +139,7 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
           prompt: t.params?.prompt,
           status: t.status === 'queued' ? 'queued' : t.status === 'failed' ? 'failed' : 'running',
           error: t.error,
+          kind: t.kind,
         } satisfies PlaceholderNodeData,
         draggable: false,
         selectable: false,

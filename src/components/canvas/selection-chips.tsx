@@ -16,7 +16,9 @@ export function SelectionChips() {
   const assets = useCanvasStore((s) => s.assets);
   const setSelectedAssetIds = useCanvasStore((s) => s.setSelectedAssetIds);
 
-  const selected = selectedAssetIds.map((id) => assets[id]).filter((a) => a && a.type === 'image');
+  const selected = selectedAssetIds
+    .map((id) => assets[id])
+    .filter((a) => a && (a.type === 'image' || a.type === 'video'));
   if (selected.length === 0) return null;
 
   return (
@@ -27,7 +29,15 @@ export function SelectionChips() {
           className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-border/70 bg-muted"
           title={asset.meta?.prompt}
         >
-          {asset.relPath && (
+          {asset.relPath && asset.type === 'video' && (
+            <video
+              src={`/api/canvases/${asset.canvasId}/asset/${asset.relPath}`}
+              preload="metadata"
+              muted
+              className="h-full w-full object-cover"
+            />
+          )}
+          {asset.relPath && asset.type === 'image' && (
             <img
               // Perf: chip box is h-14 w-14 (56px) — 2x retina thumbnail, not the full
               // Imagen/Gemini source (see image-node.tsx's same fix for why).

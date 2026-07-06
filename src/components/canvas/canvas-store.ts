@@ -10,6 +10,11 @@ export interface CanvasTask {
   error?: string;
 }
 
+export interface PendingComposerCommand {
+  assetIds: string[];
+  text: string;
+}
+
 interface CanvasState {
   assets: Record<string, CanvasAssetDTO>;
   tasks: Record<string, CanvasTask>;
@@ -17,12 +22,21 @@ interface CanvasState {
   // node.selected is a projection of this (set via onSelectionChange), not the other
   // way around. Full chip sync (F10.2) is a later addition; this is the foundation.
   selectedAssetIds: string[];
+  // F5.1/F4.x (Animate button, in-place mini composer): CanvasRoot/node-toolbar.tsx
+  // live OUTSIDE the AssistantRuntimeProvider tree (siblings of ClaudeChatController
+  // under the canvas route, not descendants — see $canvasId.tsx), so they can't call
+  // assistant-ui hooks directly to trigger a send. This is a one-shot command bus:
+  // node-toolbar.tsx sets it, chat-composer.tsx's effect consumes+clears it and does
+  // the actual stage-refs+setText+send, same side-channel spirit as
+  // stagePendingCanvasRefs.
+  pendingComposerCommand: PendingComposerCommand | null;
   setInitialAssets: (assets: CanvasAssetDTO[]) => void;
   upsertAsset: (asset: CanvasAssetDTO) => void;
   removeAssets: (assetIds: string[]) => void;
   upsertTask: (task: CanvasTask) => void;
   removeTask: (taskId: string) => void;
   setSelectedAssetIds: (ids: string[]) => void;
+  setPendingComposerCommand: (command: PendingComposerCommand | null) => void;
 }
 
 /**
@@ -33,6 +47,7 @@ export const useCanvasStore = create<CanvasState>((set) => ({
   assets: {},
   tasks: {},
   selectedAssetIds: [],
+  pendingComposerCommand: null,
   setInitialAssets: (assets) =>
     set({ assets: Object.fromEntries(assets.map((a) => [a.id, a])) }),
   upsertAsset: (asset) =>
@@ -51,4 +66,5 @@ export const useCanvasStore = create<CanvasState>((set) => ({
       return { tasks: rest };
     }),
   setSelectedAssetIds: (ids) => set({ selectedAssetIds: ids }),
+  setPendingComposerCommand: (command) => set({ pendingComposerCommand: command }),
 }));

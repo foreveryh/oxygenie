@@ -3,28 +3,32 @@
 import { useCallback, useState } from 'react';
 import { useServerFn } from '@tanstack/react-start';
 import { NodeToolbar as XyNodeToolbar, Position } from '@xyflow/react';
-import { Download, Loader2, Trash2 } from 'lucide-react';
+import { ArrowUp, Download, Info, Loader2, Maximize2, Play, Trash2, X } from 'lucide-react';
 import { useCanvasStore } from '../canvas-store';
 import { deleteAssets } from '~/server/function/canvas.server';
 
 /**
- * Canvas Agent (F4, v1 button set) — floating toolbar for the current selection.
- * Rendered ONCE at the canvas-root level (not per-node): xyflow's `nodeId` prop
- * accepts a string OR string[], positioning itself below the bounding box of ALL
- * listed nodes — so a single instance covers both single- and multi-select without
- * per-node toolbar instances. v1 scope only (impl spec §1): Animate/裁剪/放大/参数/
- * 分享/反馈/Group are P1/P2 or depend on unbuilt video generation — download + delete
- * only, matching the spec's own "v1 按钮集".
+ * Canvas Agent (F4) — floating toolbar for the current selection, plus the F4.x
+ * in-place mini composer. Button set follows the reference product 1:1 for what we
+ * actually built (▶ Animate / ⤢ Full Screen / ≡ Info / ⬇ Download / 🗑 Delete) —
+ * deliberately NOT included: 裁剪 Crop (needs real image-editing infra, none exists),
+ * ⬆ Share and 👍/👎 (P2, no backend, low value for an internal tool). Multi-select
+ * still gets download+delete only (F10.3's Group/复制 are v2, see spec's "不做/后置").
  */
 export function CanvasNodeToolbar() {
   const selectedAssetIds = useCanvasStore((s) => s.selectedAssetIds);
   const assets = useCanvasStore((s) => s.assets);
   const setSelectedAssetIds = useCanvasStore((s) => s.setSelectedAssetIds);
   const removeAssetsLocally = useCanvasStore((s) => s.removeAssets);
+  const setPendingComposerCommand = useCanvasStore((s) => s.setPendingComposerCommand);
   const deleteAssetsFn = useServerFn(deleteAssets);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  const [inlineText, setInlineText] = useState('');
 
   const selected = selectedAssetIds.map((id) => assets[id]).filter((a): a is NonNullable<typeof a> => Boolean(a));
+  const single = selected.length === 1 ? selected[0] : null;
 
   const handleDownload = useCallback(() => {
     for (const asset of selected) {
@@ -52,34 +56,157 @@ export function CanvasNodeToolbar() {
     }
   }, [selected, deleteAssetsFn, removeAssetsLocally, setSelectedAssetIds]);
 
+  // F5.1: one-click image-to-video, matching the reference product's "Animate = a
+  // shortcut for referencing this image + sending 'Animate this'" (impl spec's own
+  // node-toolbar.tsx comment, never actually wired up until now). Backend already
+  // supports it (generate_video's imageRelPath) — this button was the missing link.
+  const handleAnimate = useCallback(() => {
+    if (!single || single.type !== 'image') return;
+    setPendingComposerCommand({ assetIds: [single.id], text: 'Animate this' });
+  }, [single, setPendingComposerCommand]);
+
+  // F4.x in-place mini composer: same command bus as Animate, free-typed text.
+  const handleInlineSend = useCallback(() => {
+    if (!single || !inlineText.trim()) return;
+    setPendingComposerCommand({ assetIds: [single.id], text: inlineText.trim() });
+    setInlineText('');
+  }, [single, inlineText, setPendingComposerCommand]);
+
   if (selected.length === 0) return null;
 
+  const fullscreenAsset = single;
+
   return (
-    <XyNodeToolbar
-      nodeId={selected.map((a) => a.id)}
-      position={Position.Bottom}
-      offset={12}
-      className="flex items-center gap-1 rounded-lg border border-border/70 bg-popover p-1 shadow-md"
-    >
-      <button
-        type="button"
-        onClick={handleDownload}
-        title="下载"
-        aria-label="下载"
-        className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    <>
+      <XyNodeToolbar
+        nodeId={selected.map((a) => a.id)}
+        position={Position.Bottom}
+        offset={12}
+        className="flex flex-col gap-2 rounded-lg border border-border/70 bg-popover p-1.5 shadow-md"
       >
-        <Download width={16} height={16} />
-      </button>
-      <button
-        type="button"
-        onClick={handleDelete}
-        disabled={isDeleting}
-        title="删除"
-        aria-label="删除"
-        className="flex h-8 w-8 items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
-      >
-        {isDeleting ? <Loader2 width={16} height={16} className="animate-spin" /> : <Trash2 width={16} height={16} />}
-      </button>
-    </XyNodeToolbar>
+        <div className="flex items-center gap-1">
+          {single && single.type === 'image' && (
+            <button
+              type="button"
+              onClick={handleAnimate}
+              title="Animate（生成视频）"
+              aria-label="Animate"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Play width={16} height={16} />
+            </button>
+          )}
+          {single && (
+            <button
+              type="button"
+              onClick={() => setFullscreenOpen(true)}
+              title="Full Screen"
+              aria-label="Full Screen"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <Maximize2 width={16} height={16} />
+            </button>
+          )}
+          {single && (
+            <button
+              type="button"
+              onClick={() => setInfoOpen((v) => !v)}
+              title="生成参数"
+              aria-label="生成参数"
+              className={`flex h-8 w-8 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-foreground ${infoOpen ? 'bg-accent text-foreground' : 'text-muted-foreground'}`}
+            >
+              <Info width={16} height={16} />
+            </button>
+          )}
+          <div className="mx-0.5 h-5 w-px bg-border" />
+          <button
+            type="button"
+            onClick={handleDownload}
+            title="下载"
+            aria-label="下载"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <Download width={16} height={16} />
+          </button>
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={isDeleting}
+            title="删除"
+            aria-label="删除"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+          >
+            {isDeleting ? <Loader2 width={16} height={16} className="animate-spin" /> : <Trash2 width={16} height={16} />}
+          </button>
+        </div>
+
+        {infoOpen && single && (
+          <div className="w-64 space-y-1 rounded-md bg-muted/60 p-2 text-xs text-muted-foreground">
+            {single.meta?.prompt && <p className="line-clamp-4"><span className="font-medium text-foreground">Prompt: </span>{single.meta.prompt}</p>}
+            {single.meta?.model && <p><span className="font-medium text-foreground">Model: </span>{single.meta.model}</p>}
+            <p><span className="font-medium text-foreground">尺寸: </span>{Math.round(single.width)}×{Math.round(single.height)}{single.type === 'video' && single.meta?.durationSec ? ` · ${single.meta.durationSec}s` : ''}</p>
+          </div>
+        )}
+
+        {single && (
+          <div className="flex items-center gap-1.5 rounded-md border border-border/60 bg-background px-2 py-1">
+            <input
+              value={inlineText}
+              onChange={(e) => setInlineText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleInlineSend();
+                }
+              }}
+              placeholder="Type to imagine…"
+              className="w-56 bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={handleInlineSend}
+              disabled={!inlineText.trim()}
+              aria-label="发送"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity disabled:opacity-40"
+            >
+              <ArrowUp width={12} height={12} />
+            </button>
+          </div>
+        )}
+      </XyNodeToolbar>
+
+      {fullscreenOpen && fullscreenAsset && fullscreenAsset.relPath && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/90 p-8"
+          onClick={() => setFullscreenOpen(false)}
+        >
+          <button
+            type="button"
+            onClick={() => setFullscreenOpen(false)}
+            aria-label="关闭"
+            className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white transition-colors hover:bg-white/20"
+          >
+            <X width={18} height={18} />
+          </button>
+          {fullscreenAsset.type === 'video' ? (
+            <video
+              src={`/api/canvases/${fullscreenAsset.canvasId}/asset/${fullscreenAsset.relPath}`}
+              controls
+              autoPlay
+              className="max-h-full max-w-full"
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            // Full-res original — no ?w= thumbnail param, this is the one place we want it.
+            <img
+              src={`/api/canvases/${fullscreenAsset.canvasId}/asset/${fullscreenAsset.relPath}`}
+              alt={fullscreenAsset.meta?.prompt || 'canvas asset'}
+              className="max-h-full max-w-full object-contain"
+              onClick={(e) => e.stopPropagation()}
+            />
+          )}
+        </div>
+      )}
+    </>
   );
 }

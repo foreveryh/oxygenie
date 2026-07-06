@@ -107,11 +107,22 @@ export function serializeCustomHeaders(headers) {
  * caller falls back to whatever raw env var (e.g. GEMINI_API_KEY) may already be set,
  * rather than failing the whole canvas session over a media-gen credential.
  *
+ * `capability` ('image'|'video') is what makes the SAME connection swappable
+ * independently per capability — an admin can point 'image' at one provider/model
+ * and 'video' at a completely different one (own connection, own protocol) via
+ * /admin/models, without any code change. The gemini branch below sets a
+ * capability-specific *_MODEL var (GEMINI_IMAGE_MODEL / GEMINI_VIDEO_MODEL) so image
+ * and video resolution never clobber each other when both happen to route through
+ * the same Gemini connection, but nothing here assumes video ends up on 'gemini' —
+ * a future non-Gemini video provider just adds its own `meta.protocol === '...'`
+ * branch and its own env var names, same shape as this one.
+ *
  * @param {ModelRouteMeta|null|undefined} meta
  * @param {Record<string,string|undefined>} sourceEnv
+ * @param {'image'|'video'} capability
  * @returns {Record<string,string|undefined>} a new env object (or sourceEnv itself if unresolved)
  */
-export function buildMediaGenEnv(meta, sourceEnv) {
+export function buildMediaGenEnv(meta, sourceEnv, capability) {
   if (!meta || !meta.enabled || !meta.baseUrl || !meta.model) return sourceEnv;
 
   let token = null;
@@ -127,7 +138,11 @@ export function buildMediaGenEnv(meta, sourceEnv) {
   if (meta.protocol === 'gemini') {
     env.GEMINI_API_KEY = token;
     env.GEMINI_BASE_URL = meta.baseUrl;
-    env.GEMINI_IMAGE_MODEL = meta.model;
+    if (capability === 'video') {
+      env.GEMINI_VIDEO_MODEL = meta.model;
+    } else {
+      env.GEMINI_IMAGE_MODEL = meta.model;
+    }
     return env;
   }
 

@@ -17,6 +17,7 @@ import { resolveMcpServerConfigs } from './src/claude/mcp/manager.js';
 import { runPython } from './src/claude/python/runner.js';
 import { generateImage } from './src/claude/glm-image/runner.js';
 import { generateImage as generateGeminiImage } from './src/claude/media-gen/gemini-image-runner.js';
+import { generateVideo as generateGeminiVideo } from './src/claude/media-gen/gemini-video-runner.js';
 import { runBash } from './src/claude/bash/runner.js';
 import { ensureSandbox, sandboxStatus } from './src/claude/execution/sandbox.js';
 import { getExecutionRuntime } from './src/claude/execution/index.js';
@@ -586,9 +587,66 @@ async function startRun(request) {
       }
     );
 
+    // mcp__media-gen__generate_video — same started/result frame pattern as
+    // generate_image. `imageRelPath` (an existing canvas asset filename, e.g. from
+    // `ls`) makes this do image-to-video (Animate, PRD F5) instead of text-to-video;
+    // omit it for a plain text-to-video generation.
+    const mediaGenGenerateVideoTool = tool(
+      'generate_video',
+      'Generate a video with Gemini Veo. Videos automatically appear on ' +
+      "the user's canvas — do not mention file paths, just describe what you generated. " +
+      'Pass imageRelPath (an existing canvas image asset filename) to animate that image ' +
+      'instead of generating from the prompt alone.',
+      {
+        prompt: z.string().min(1).describe('Video generation / motion prompt (required)'),
+        imageRelPath: z.string().optional().describe('Existing canvas image asset filename to animate (image-to-video)'),
+        aspect: z.enum(['16:9', '9:16']).optional().describe('Aspect ratio (default 16:9)'),
+        durationSeconds: z.union([z.literal(4), z.literal(6), z.literal(8)]).optional().describe('Video length in seconds (default 8)'),
+        resolution: z.enum(['720p', '1080p']).optional().describe('Video resolution (default 720p)'),
+      },
+      async (args) => {
+        const toolUseId = crypto.randomUUID();
+        writeFrame({
+          type: 'media_gen_task_started',
+          toolUseId,
+          kind: args.imageRelPath ? 'i2v' : 't2v',
+          input: {
+            prompt: args.prompt,
+            aspect: args.aspect ?? '16:9',
+            durationSeconds: args.durationSeconds ?? 8,
+            resolution: args.resolution ?? '720p',
+          },
+        });
+        try {
+          const imagePath = args.imageRelPath ? path.join(config.cwd, args.imageRelPath) : undefined;
+          const result = await generateGeminiVideo({
+            prompt: args.prompt,
+            imagePath,
+            aspect: args.aspect,
+            durationSeconds: args.durationSeconds,
+            resolution: args.resolution,
+            outputDir: config.cwd,
+          });
+          writeFrame({ type: 'media_gen_task_result', toolUseId, isError: false, files: result.files });
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, count: result.files.length }),
+            }],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          writeFrame({ type: 'media_gen_task_result', toolUseId, isError: true, error: message });
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: message }), isError: true }],
+          };
+        }
+      }
+    );
+
     const mediaGenMcpServer = createSdkMcpServer({
       name: 'media-gen',
-      tools: [mediaGenGenerateImageTool],
+      tools: [mediaGenGenerateImageTool, mediaGenGenerateVideoTool],
     });
 
     // RAG R2 (final spec D6/D7): kb_search — semantic retrieval over the user's
@@ -823,7 +881,7 @@ async function startRun(request) {
     // this session's cwd is a canvas workspace — see handleChat's workerEnv.CANVAS_ID).
     if (process.env.CANVAS_ID) {
       mcpServers['media-gen'] = mediaGenMcpServer;
-      allowedTools.push('mcp__media-gen__generate_image');
+      allowedTools.push('mcp__media-gen__generate_image', 'mcp__media-gen__generate_video');
       console.error('[Worker] media-gen tool: REGISTERED (canvas session)');
     }
 
@@ -907,13 +965,17 @@ their [n] markers; do not present low-confidence passages as established fact.` 
 ` : '';
     const canvasGuidance = process.env.CANVAS_ID ? `
 **Canvas workspace** — you are working in a shared "画布" (canvas) workspace. The current
-directory is this workspace; any image files you or your tools create here automatically
-appear on the user's canvas (a visual board, not just this chat).
+directory is this workspace; any image/video files you or your tools create here
+automatically appear on the user's canvas (a visual board, not just this chat).
 - To generate an image, call \`mcp__media-gen__generate_image\` (prompt, optional count
   1-4, optional aspect ratio). The image(s) will appear on the canvas — do not mention
   file paths or say "saved to X"; just describe what you generated.
+- To generate a video, call \`mcp__media-gen__generate_video\` (prompt, optional
+  imageRelPath to animate an existing canvas image instead of generating from prompt
+  alone, optional aspect/durationSeconds/resolution). Video generation takes 1-3
+  minutes — mention that it's in progress rather than going silent.
 - Only promise capabilities you actually have. If asked for something you have no tool
-  for (e.g. video), say so plainly rather than pretending to have done it.
+  for, say so plainly rather than pretending to have done it.
 ` : '';
     const workspaceInstructions = `
 ${ragGuardrailInstructions}

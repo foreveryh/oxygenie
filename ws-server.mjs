@@ -1596,13 +1596,17 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     // sessions only — regular chat sessions never see this tool).
     if (effectiveCanvasId) {
       workerEnv.CANVAS_ID = effectiveCanvasId;
-      // D6: route media-gen to the admin-configured 'image' capability default
-      // (model-registry-v2, /admin/models) instead of a raw GEMINI_API_KEY env var.
-      // Non-fatal: no default configured yet → workerEnv untouched → gemini-image-
-      // runner.js falls back to its own process.env.GEMINI_API_KEY read (today's
-      // behavior, preserved for zero-admin-action deployments).
+      // D6: route media-gen to the admin-configured 'image'/'video' capability
+      // defaults (model-registry-v2, /admin/models) instead of raw env vars. Each
+      // capability resolves and injects independently — they can land on different
+      // connections/providers, never assumed to be the same one (Veo/Gemini is the
+      // first video provider, not necessarily the last). Non-fatal: no default
+      // configured yet → workerEnv untouched → the runner falls back to its own
+      // process.env read (today's behavior, preserved for zero-admin-action deploys).
       const imageMeta = await resolveMediaGenCredential(ws.cookie, 'image');
-      workerEnv = buildMediaGenEnv(imageMeta, workerEnv);
+      workerEnv = buildMediaGenEnv(imageMeta, workerEnv, 'image');
+      const videoMeta = await resolveMediaGenCredential(ws.cookie, 'video');
+      workerEnv = buildMediaGenEnv(videoMeta, workerEnv, 'video');
     }
 
     // Registry v2: admin-managed global variables (sealed over the internal API,

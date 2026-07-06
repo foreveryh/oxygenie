@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import type { NodeProps } from '@xyflow/react';
-import { ImageIcon, Loader2, X } from 'lucide-react';
+import { ImageIcon, Loader2, VideoIcon, X } from 'lucide-react';
 import { useCanvasStore } from '../canvas-store';
 
 export type PlaceholderNodeData = {
@@ -8,6 +8,8 @@ export type PlaceholderNodeData = {
   prompt?: string;
   status: 'queued' | 'running' | 'failed';
   error?: string;
+  /** t2i/i2i → image; t2v/i2v/v2v → video (task_created's `kind`, see tasks.ts). */
+  kind?: string;
 };
 
 /**
@@ -19,6 +21,8 @@ export type PlaceholderNodeData = {
 function PlaceholderNodeComponent({ data }: NodeProps & { data: PlaceholderNodeData }) {
   const removeTask = useCanvasStore((s) => s.removeTask);
   const isFailed = data.status === 'failed';
+  const isVideo = data.kind === 't2v' || data.kind === 'i2v' || data.kind === 'v2v';
+  const Icon = isVideo ? VideoIcon : ImageIcon;
   return (
     <div
       style={{ width: 280, height: 280 }}
@@ -35,12 +39,13 @@ function PlaceholderNodeComponent({ data }: NodeProps & { data: PlaceholderNodeD
           >
             <X width={12} height={12} />
           </button>
-          <ImageIcon className="h-6 w-6 text-destructive" />
+          <Icon className="h-6 w-6 text-destructive" />
           <span className="text-xs text-destructive">生成失败{data.error ? `：${data.error}` : ''}</span>
         </>
       ) : (
         <>
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          {isVideo && <span className="text-[10px] text-muted-foreground/70">视频生成中，可能需要 1-3 分钟…</span>}
           <span className="line-clamp-3 text-xs text-muted-foreground">
             {data.prompt || 'Generating…'}
           </span>

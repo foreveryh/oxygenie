@@ -22,6 +22,8 @@
 
 import { createFileRoute } from '@tanstack/react-router';
 import { readFile, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { Readable } from 'node:stream';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
 import sharp from 'sharp';
@@ -37,14 +39,33 @@ const CONTENT_TYPE_BY_EXT: Record<string, string> = {
   '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
   '.webp': 'image/webp',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
 };
 
 const RESIZABLE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+const VIDEO_EXTS = new Set(['.mp4', '.webm']);
 const MAX_THUMB_WIDTH = 1024; // guards against a client requesting an absurd/negative size
 
 function getContentType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   return CONTENT_TYPE_BY_EXT[ext] || 'application/octet-stream';
+}
+
+/** Parses a single-range `Range: bytes=START-END` header (the only form <video> sends). */
+function parseRange(rangeHeader: string, fileSize: number): { start: number; end: number } | null {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+  if (!match) return null;
+  const [, startStr, endStr] = match;
+  let start = startStr ? parseInt(startStr, 10) : 0;
+  let end = endStr ? parseInt(endStr, 10) : fileSize - 1;
+  if (!startStr && endStr) {
+    // Suffix range: "bytes=-500" → last 500 bytes.
+    start = Math.max(0, fileSize - parseInt(endStr, 10));
+    end = fileSize - 1;
+  }
+  if (Number.isNaN(start) || Number.isNaN(end) || start > end || start < 0 || end >= fileSize) return null;
+  return { start, end };
 }
 
 function resolveFilePathFromRequest(request: Request, canvasId: string, fallback: string): string {
@@ -101,6 +122,34 @@ export const Route = createFileRoute('/api/canvases/$canvasId/asset/$filePath')(
           if (!stats.isFile()) {
             return Response.json({ error: 'Path is not a file' }, { status: 400 });
           }
+
+          const ext = path.extname(filePath).toLowerCase();
+          if (VIDEO_EXTS.has(ext) && !download) {
+            // Range support (M2-T4) — <video> seeking needs 206 partial responses; a
+            // full readFile()-into-memory per request (fine for images) doesn't scale
+            // to multi-MB/tens-of-MB video files, so this streams only the requested
+            // byte window straight from disk.
+            const contentType = getContentType(filePath);
+            const rangeHeader = request.headers.get('range');
+            const range = rangeHeader ? parseRange(rangeHeader, stats.size) : null;
+            if (rangeHeader && !range) {
+              return new Response(null, { status: 416, headers: { 'content-range': `bytes */${stats.size}` } });
+            }
+            const { start, end } = range ?? { start: 0, end: stats.size - 1 };
+            const nodeStream = createReadStream(fullFilePath, { start, end });
+            const headers = new Headers({
+              'content-type': contentType,
+              'accept-ranges': 'bytes',
+              'content-length': String(end - start + 1),
+              'cache-control': 'private, max-age=3600',
+            });
+            if (range) headers.set('content-range', `bytes ${start}-${end}/${stats.size}`);
+            return new Response(Readable.toWeb(nodeStream) as unknown as ReadableStream, {
+              status: range ? 206 : 200,
+              headers,
+            });
+          }
+
           let buffer = await readFile(fullFilePath);
           let contentType = getContentType(filePath);
           if (thumbWidth) {
