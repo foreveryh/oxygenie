@@ -65,9 +65,18 @@ export async function assertProjectOwner(userId: string, projectId: string): Pro
 /**
  * SQL predicate for "sessions this user may see": own personal/loose sessions, OR any
  * session in a Project they belong to. Push isolation INTO the query — never post-filter.
+ *
+ * Canvas Agent (D5): a canvas session also has `projectId = null` (it's never inside a
+ * Project), so it satisfies the "personal" branch too. `isNull(canvasId)` excludes it —
+ * without this, canvas sessions would leak into the "最近" loose-chat rail. Canvas
+ * workspace pages query their own sessions separately (by canvasId), not through here.
  */
 export function visibleSessionsWhere(userId: string, accessibleIds: string[]): SQL | undefined {
-  const personal = and(isNull(agentSession.projectId), eq(agentSession.userId, userId));
+  const personal = and(
+    isNull(agentSession.projectId),
+    isNull(agentSession.canvasId),
+    eq(agentSession.userId, userId)
+  );
   if (accessibleIds.length === 0) return personal;
   return or(personal, inArray(agentSession.projectId, accessibleIds));
 }

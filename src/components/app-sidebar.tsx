@@ -21,6 +21,7 @@ import SparklingIcon from 'virtual:icons/ri/sparkling-line';
 import AppsIcon from 'virtual:icons/ri/apps-2-line';
 import ScanIcon from 'virtual:icons/ri/scan-2-line';
 import ShieldIcon from 'virtual:icons/ri/shield-line';
+import PaletteIcon from 'virtual:icons/ri/palette-line';
 import { FEATURE_CONFIG } from '~/config/features';
 import { isAdminUser } from '~/server/function/skills.server';
 import { getUpdateStatus } from '~/server/function/updater.server';
@@ -96,6 +97,12 @@ export function AppSidebar({ user, ...props }: React.ComponentProps<typeof Sideb
           url: '/agents/ocr',
           icon: ScanIcon,
           enabled: FEATURE_CONFIG.ocr,
+        },
+        {
+          title: content.nav.canvas,
+          url: '/agents/canvas',
+          icon: PaletteIcon,
+          enabled: FEATURE_CONFIG.canvas,
         },
       ],
     },

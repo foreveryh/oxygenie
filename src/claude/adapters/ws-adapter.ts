@@ -107,7 +107,7 @@ type StreamEvent = {
 
 // WebSocket message types (matching ws-server.ts)
 type InboundMessage =
-  | { type: 'create_session'; projectId?: string }
+  | { type: 'create_session'; projectId?: string; canvasId?: string }
   | { type: 'init_session'; sessionId: string }
   | { type: 'chat'; content: string; sessionId?: string; skillSlug?: string; permissionTier?: string; model?: string; kbIds?: string[] }
   | { type: 'resume'; sessionId: string }
@@ -120,7 +120,9 @@ type InboundMessage =
   | { type: 'stop_preview'; sessionId?: string }
   | { type: 'share_preview'; previewId: string; sessionId?: string }
   | { type: 'approval_response'; toolUseID: string; decision: 'allow' | 'deny'; sessionId?: string }
-  | { type: 'ping' };
+  | { type: 'ping' }
+  | { type: 'subscribe_canvas'; canvasId: string }
+  | { type: 'unsubscribe_canvas'; canvasId: string };
 
 // Concurrent sessions: stream frames now carry the workspace `sessionId` they
 // belong to, so the adapter routes them to the right conversation (and drops
@@ -147,7 +149,8 @@ type OutboundMessage =
       seq?: number;
       sessionId?: string;
     }
-  | { type: 'pong' };
+  | { type: 'pong' }
+  | { type: 'canvas_event'; canvasId: string; event: string; payload: unknown };
 
 // Assistant UI Part Types
 type TextPart = {
@@ -466,6 +469,25 @@ function notifySessionInit(sessionId: string): void {
   }
 }
 
+// Canvas Agent (D5): single-callback registration, same pattern as onSessionInit — only
+// one canvas page is ever mounted at a time in a tab, so no pub/sub list needed.
+let canvasEventCallback: ((event: string, payload: unknown) => void) | null = null;
+
+export function onCanvasEvent(callback: (event: string, payload: unknown) => void): () => void {
+  canvasEventCallback = callback;
+  return () => {
+    canvasEventCallback = null;
+  };
+}
+
+export async function subscribeCanvas(canvasId: string): Promise<void> {
+  await send({ type: 'subscribe_canvas', canvasId });
+}
+
+export async function unsubscribeCanvas(canvasId: string): Promise<void> {
+  await send({ type: 'unsubscribe_canvas', canvasId });
+}
+
 export function getSessionId(): string | undefined {
   return currentSessionId;
 }
@@ -613,6 +635,14 @@ function getWebSocket(): Promise<WebSocket> {
         // and span tabs. Persistent socket (outside any run).
         if (msg.type === 'running_sessions') {
           useChatSessionStore.getState().setRunningSessionIds(msg.sessionIds);
+          return;
+        }
+
+        // Canvas Agent (D5): asset/task events for the canvas the user is viewing.
+        // Persistent socket, outside any chat run — a canvas image can land from a
+        // DIFFERENT session in the same workspace.
+        if (msg.type === 'canvas_event') {
+          if (canvasEventCallback) canvasEventCallback(msg.event, msg.payload);
           return;
         }
 
@@ -802,8 +832,11 @@ export async function resumeSession(sessionId: string): Promise<void> {
  * Sends create_session message to server, which creates session without user message
  * Returns a promise that resolves when session_init is received
  */
-export async function createSession(projectId?: string): Promise<string> {
-  console.log('[WS Adapter] Creating new session explicitly', projectId ? `(project ${projectId})` : '');
+export async function createSession(projectId?: string, canvasId?: string): Promise<string> {
+  console.log(
+    '[WS Adapter] Creating new session explicitly',
+    projectId ? `(project ${projectId})` : canvasId ? `(canvas ${canvasId})` : ''
+  );
   return new Promise((resolve, reject) => {
     // Set up one-time listener for session_init
     const onInit = (msg: OutboundMessage) => {
@@ -831,7 +864,9 @@ export async function createSession(projectId?: string): Promise<string> {
 
     // Send create_session message. Projects: an optional projectId binds the fresh
     // session to a Project at creation time (race-free), used by "new chat in <project>".
-    send({ type: 'create_session', ...(projectId ? { projectId } : {}) })
+    // Canvas Agent (D5): canvasId is the same idea for a canvas workspace — mutually
+    // exclusive with projectId.
+    send({ type: 'create_session', ...(projectId ? { projectId } : {}), ...(canvasId ? { canvasId } : {}) })
       .catch((err) => {
         cleanup();
         reject(err);

@@ -12,6 +12,7 @@
 import { pgTable, text, boolean, timestamp, uuid, index, uniqueIndex, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { user } from './auth.schema';
 import { project } from './project.schema';
+import { canvasWorkspace } from './canvas.schema';
 import { createdAt, updatedAt } from './_shared';
 
 export const agentSession = pgTable('agent_session', {
@@ -27,6 +28,15 @@ export const agentSession = pgTable('agent_session', {
   // a non-null projectId means the session belongs to that Project and is visible to
   // all its members (access resolved via canSeeSession, never a raw WHERE user_id).
   projectId: uuid('project_id').references(() => project.id, { onDelete: 'set null' }),
+
+  // Canvas workspace association (Canvas Agent D5). Mutually exclusive with projectId —
+  // a canvas session is never inside a (multi-member) Project. null = not a canvas
+  // session. Non-null means cwd resolves to the SHARED canvas workspace directory
+  // (getCanvasWorkspace), not a per-session directory — see ws-server.mjs. Visibility is
+  // owner-only (canvas_workspace has no member table); visibleSessionsWhere() in
+  // src/server/projects/access.ts must exclude non-null canvasId from the personal/loose
+  // listing so canvas sessions don't leak into the "最近" rail.
+  canvasId: uuid('canvas_id').references(() => canvasWorkspace.id, { onDelete: 'cascade' }),
 
   // Branch lineage (Projects P3 — 续聊即分支): when a non-owner replies to a shared
   // session, we forkSession() the SDK transcript into a NEW session for them and set this
@@ -63,6 +73,9 @@ export const agentSession = pgTable('agent_session', {
 
   // Index for project session queries (list a Project's shared sessions)
   projectIdx: index('idx_agent_session_project').on(table.projectId),
+
+  // Index for canvas workspace session queries
+  canvasIdx: index('idx_agent_session_canvas').on(table.canvasId),
 
   // Index for sorting by update time
   updatedIdx: index('idx_agent_session_updated').on(table.updatedAt),

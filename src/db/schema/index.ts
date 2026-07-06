@@ -20,3 +20,4 @@ export * from './update-status.schema';
 export * from './perf-sample.schema';
 export * from './system-setting.schema';
 export * from './global-variable.schema';
+export * from './canvas.schema';

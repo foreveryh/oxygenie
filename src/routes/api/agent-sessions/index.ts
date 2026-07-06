@@ -8,7 +8,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { desc, eq, sql, and } from 'drizzle-orm';
 import { db } from '~/db/db-config';
-import { agentSession } from '~/db/schema';
+import { agentSession, canvasWorkspace } from '~/db/schema';
 import { requireUser } from '~/server/require-user';
 import { accessibleProjectIds, visibleSessionsWhere, canAccessSession } from '~/server/projects/access';
 
@@ -74,13 +74,14 @@ export const Route = createFileRoute('/api/agent-sessions/')({
         const user = await requireUser(request);
 
         const body = await request.json();
-        const { sdkSessionId, claudeHomePath, title, realSdkSessionId, projectId, branchedFromSessionId } = body as {
+        const { sdkSessionId, claudeHomePath, title, realSdkSessionId, projectId, branchedFromSessionId, canvasId } = body as {
           sdkSessionId: string;
           claudeHomePath?: string;
           title?: string;
           realSdkSessionId?: string;
           projectId?: string;        // set on a branch create (lineage); membership-validated below
           branchedFromSessionId?: string;
+          canvasId?: string;         // Canvas Agent (D5): single-owner workspace, ownership-validated below
         };
 
         if (!sdkSessionId) {
@@ -111,6 +112,20 @@ export const Route = createFileRoute('/api/agent-sessions/')({
             return Response.json({ error: 'forbidden: cannot branch from that session' }, { status: 403 });
           }
           validBranchedFrom = branchedFromSessionId;
+        }
+
+        // Canvas workspace has no member table (single owner, D5) — validate ownership
+        // directly rather than via accessibleProjectIds/canAccessSession.
+        let validCanvasId: string | null = null;
+        if (canvasId) {
+          const [ws] = await db
+            .select({ ownerUserId: canvasWorkspace.ownerUserId })
+            .from(canvasWorkspace)
+            .where(eq(canvasWorkspace.id, canvasId));
+          if (!ws || ws.ownerUserId !== user.id) {
+            return Response.json({ error: 'forbidden: not the owner of that canvas workspace' }, { status: 403 });
+          }
+          validCanvasId = canvasId;
         }
 
         // Check if session already exists
@@ -166,6 +181,7 @@ export const Route = createFileRoute('/api/agent-sessions/')({
             title: title || null,
             projectId: validProjectId,
             branchedFromSessionId: validBranchedFrom,
+            canvasId: validCanvasId,
           })
           .returning({ id: agentSession.id });
 

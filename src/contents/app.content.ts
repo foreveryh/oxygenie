@@ -56,6 +56,14 @@ const appContent = {
         ko: 'OCR',
         'zh-Hant': '文字識別',
       }),
+      canvas: t({
+        en: 'Canvas',
+        'zh-Hans': '画布',
+        fr: 'Canevas',
+        ja: 'キャンバス',
+        ko: '캔버스',
+        'zh-Hant': '畫布',
+      }),
       dashboards: t({
         en: 'Dashboards',
         'zh-Hans': '仪表板',

@@ -8,6 +8,7 @@
 
 import { createSdkMcpServer, query, tool, forkSession as forkSdkSession } from '@anthropic-ai/claude-agent-sdk';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
@@ -15,6 +16,7 @@ import { createPathSecurity } from './src/claude/path-security.js';
 import { resolveMcpServerConfigs } from './src/claude/mcp/manager.js';
 import { runPython } from './src/claude/python/runner.js';
 import { generateImage } from './src/claude/glm-image/runner.js';
+import { generateImage as generateGeminiImage } from './src/claude/media-gen/gemini-image-runner.js';
 import { runBash } from './src/claude/bash/runner.js';
 import { ensureSandbox, sandboxStatus } from './src/claude/execution/sandbox.js';
 import { getExecutionRuntime } from './src/claude/execution/index.js';
@@ -536,6 +538,59 @@ async function startRun(request) {
       tools: [glmImageGenerateTool],
     });
 
+    // Canvas Agent (D5/D6) — mcp__media-gen__generate_image. Only registered for
+    // canvas sessions (CANVAS_ID env var set by ws-server, see handleChat). The
+    // handler emits its OWN media_gen_task_started/result frames directly (rather
+    // than ws-server trying to reconstruct tool_use/tool_result correlation from raw
+    // SDK content blocks, whose exact shape isn't worth depending on) — it generates a
+    // correlation id up front, reports "started" before the (slow) API call, then
+    // "result" after, so ws-server can show a Generating placeholder in between.
+    const mediaGenGenerateImageTool = tool(
+      'generate_image',
+      'Generate one or more images with Gemini Imagen. Images automatically appear on ' +
+      "the user's canvas — do not mention file paths, just describe what you generated.",
+      {
+        prompt: z.string().min(1).describe('Image generation prompt (required)'),
+        count: z.number().int().min(1).max(4).optional().describe('Number of images (1-4, default 1)'),
+        aspect: z.enum(['1:1', '3:4', '4:3', '9:16', '16:9']).optional().describe('Aspect ratio (default 1:1)'),
+      },
+      async (args) => {
+        const toolUseId = crypto.randomUUID();
+        writeFrame({
+          type: 'media_gen_task_started',
+          toolUseId,
+          kind: 't2i',
+          input: { prompt: args.prompt, count: args.count ?? 1, aspect: args.aspect ?? '1:1' },
+        });
+        try {
+          const result = await generateGeminiImage({
+            prompt: args.prompt,
+            count: args.count,
+            aspect: args.aspect,
+            outputDir: config.cwd,
+          });
+          writeFrame({ type: 'media_gen_task_result', toolUseId, isError: false, files: result.files });
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, count: result.files.length }),
+            }],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          writeFrame({ type: 'media_gen_task_result', toolUseId, isError: true, error: message });
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: message }), isError: true }],
+          };
+        }
+      }
+    );
+
+    const mediaGenMcpServer = createSdkMcpServer({
+      name: 'media-gen',
+      tools: [mediaGenGenerateImageTool],
+    });
+
     // RAG R2 (final spec D6/D7): kb_search — semantic retrieval over the user's
     // ingested ('rag'-tier) documents. The worker stays unprivileged: the tool calls
     // back into the app (/api/rag/search) with the user's cookie from the STDIN
@@ -762,6 +817,16 @@ async function startRun(request) {
       }
     }
 
+    // Canvas Agent (D5) — media-gen is a built-in capability of canvas sessions, not a
+    // user-toggleable catalog MCP (same rationale as bash/kb_search above): merged in
+    // AFTER resolveMcpServerConfigs, gated on CANVAS_ID (set by ws-server only when
+    // this session's cwd is a canvas workspace — see handleChat's workerEnv.CANVAS_ID).
+    if (process.env.CANVAS_ID) {
+      mcpServers['media-gen'] = mediaGenMcpServer;
+      allowedTools.push('mcp__media-gen__generate_image');
+      console.error('[Worker] media-gen tool: REGISTERED (canvas session)');
+    }
+
     // kb_search is a BUILT-IN capability (like Read/Grep), not a curated-catalog MCP —
     // resolveMcpServerConfigs only passes through catalog-enabled sdk servers, so it is
     // merged here AFTER resolution. Registered only when the run carries user auth.
@@ -840,8 +905,19 @@ their [n] markers; do not present low-confidence passages as established fact.` 
 - Do NOT emulate shell commands through Python subprocess/os.system when shell work is requested.
 - (For a runnable web app, still hand the final build + serve to the Preview engine — see below.)
 ` : '';
+    const canvasGuidance = process.env.CANVAS_ID ? `
+**Canvas workspace** — you are working in a shared "画布" (canvas) workspace. The current
+directory is this workspace; any image files you or your tools create here automatically
+appear on the user's canvas (a visual board, not just this chat).
+- To generate an image, call \`mcp__media-gen__generate_image\` (prompt, optional count
+  1-4, optional aspect ratio). The image(s) will appear on the canvas — do not mention
+  file paths or say "saved to X"; just describe what you generated.
+- Only promise capabilities you actually have. If asked for something you have no tool
+  for (e.g. video), say so plainly rather than pretending to have done it.
+` : '';
     const workspaceInstructions = `
 ${ragGuardrailInstructions}
+${canvasGuidance}
 
 IMPORTANT - File Access and Path Boundaries:
 

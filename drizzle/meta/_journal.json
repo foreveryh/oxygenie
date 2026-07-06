@@ -267,6 +267,13 @@
       "when": 1783206132905,
       "tag": "0037_round_saracen",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1783285779627,
+      "tag": "0038_daffy_excalibur",
+      "breakpoints": true
     }
   ]
 }

@@ -197,6 +197,8 @@ export interface ClaudeChatControllerProps {
   urlSessionId?: string | null;
   /** Project context when this chat lives inside a Project (URL-driven). */
   projectId?: string | null;
+  /** Canvas workspace context (Canvas Agent, D5 — mutually exclusive with projectId). */
+  canvasId?: string | null;
   /** Render the controller's own SessionList rail. False when an outer rail is present (e.g. ProjectsRail). */
   showInternalSessionList?: boolean;
   /** New-chat landing (no urlSessionId yet): show a blank composer WITHOUT creating a
@@ -216,6 +218,7 @@ export function ClaudeChatController({
   permissionInfo,
   urlSessionId = null,
   projectId: urlProjectId = null,
+  canvasId = null,
   showInternalSessionList = true,
   newChat = false,
 }: ClaudeChatControllerProps) {
@@ -387,7 +390,13 @@ export function ClaudeChatController({
       projectQueryClient.invalidateQueries({ queryKey: ['project-sessions'] });
       // Mirror the active session into the URL (deep-linkable, Phase 2 = URL is the truth).
       // In a project → project-chat URL; solo → /agents/c/$id. `replace` so it doesn't spam history.
-      if (urlProjectId) {
+      // Canvas (D5): stays on /agents/canvas/$canvasId — no per-session sub-route in this
+      // slice (one ambient session per workspace), so skip navigation entirely rather than
+      // falling through to the solo /agents/c/$id branch (which would navigate AWAY from
+      // the canvas page).
+      if (canvasId) {
+        // no-op: session tracked in store, URL doesn't need to change
+      } else if (urlProjectId) {
         navigate({
           to: '/agents/projects/$projectId/c/$sessionId',
           params: { projectId: urlProjectId, sessionId },
@@ -398,7 +407,7 @@ export function ClaudeChatController({
       }
     });
     return unsubscribe;
-  }, [setSessionId, invalidateSessions, projectQueryClient, navigate, urlProjectId]);
+  }, [setSessionId, invalidateSessions, projectQueryClient, navigate, urlProjectId, canvasId]);
 
   // Handle WebSocket reconnection - resume current session if any
   useReconnectionRecovery(useCallback(() => {
@@ -476,7 +485,7 @@ export function ClaudeChatController({
         // project at creation (Codex) — avoids a loose session whose URL is later mirrored to a
         // project path (fake binding). Loose "new chat in <project>" still uses the arm.
         const armedProjectId = urlProjectId ?? useChatSessionStore.getState().pendingProjectId;
-        const newSessionId = await createSession(armedProjectId ?? undefined);
+        const newSessionId = await createSession(armedProjectId ?? undefined, canvasId ?? undefined);
         console.log('[Route] New session created:', newSessionId);
         setCurrentSessionId(newSessionId);
         setSessionId(newSessionId);
@@ -635,7 +644,7 @@ export function ClaudeChatController({
         // Capture the armed Project BEFORE the async create so a remount/unmount-clear
         // can't lose it mid-flight. The URL's project wins; loose arm is the fallback.
         const armedProjectId = urlProjectId ?? useChatSessionStore.getState().pendingProjectId;
-        const newSessionId = await createSession(armedProjectId ?? undefined);
+        const newSessionId = await createSession(armedProjectId ?? undefined, canvasId ?? undefined);
         trackClaudeAgentSessionCreated({ sessionId: newSessionId });
         // Fallback bind (idempotent), same as the eager path: ensures the link even if the
         // create-time bind was skipped; a failure degrades gracefully to a loose chat.

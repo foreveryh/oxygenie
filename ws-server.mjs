@@ -385,6 +385,7 @@ async function persistSession(cookie, workspaceSessionId, realSdkSessionId, clau
         ...(title && { title }),
         ...(lineage?.projectId && { projectId: lineage.projectId }),
         ...(lineage?.branchedFromSessionId && { branchedFromSessionId: lineage.branchedFromSessionId }),
+        ...(lineage?.canvasId && { canvasId: lineage.canvasId }),
       }),
     });
 
@@ -739,6 +740,18 @@ function getSessionWorkspace(userId, sessionId) {
 }
 
 /**
+ * Get canvas-workspace-specific workspace path (Canvas Agent, D5). Unlike a per-session
+ * workspace, ALL agent sessions opened against the same canvasId share this ONE directory
+ * — that's how "Agent A generates an image, Agent B in a second session sees it via ls"
+ * works. Structure: /data/users/{userId}/canvases/{canvasId}/workspace/
+ */
+function getCanvasWorkspace(userId, canvasId) {
+  const safeUserId = sanitizeId(userId);
+  const safeCanvasId = sanitizeId(canvasId);
+  return path.join(SESSIONS_ROOT, safeUserId, 'canvases', safeCanvasId, 'workspace');
+}
+
+/**
  * Ensure directory exists
  */
 async function ensureDirExists(dirPath) {
@@ -790,6 +803,15 @@ async function ensureClaudeSymlink(workspacePath, claudeHome) {
     await symlink(targetPath, symlinkPath, 'dir');
     console.log(`[WS Server] Created .claude symlink: ${symlinkPath} -> ${targetPath}`);
   } catch (error) {
+    // Canvas workspaces (D5) are shared by multiple sessions from the moment they're
+    // created, unlike a per-session workspace where this race is impossible: two
+    // sessions can both lstat a brand-new shared workspace, both see ENOENT, and both
+    // reach symlink() — the loser gets EEXIST. That's not a failure, just a concurrent
+    // creator winning first; treat it as success.
+    if (error.code === 'EEXIST') {
+      console.log(`[WS Server] .claude symlink created concurrently by another session, continuing`);
+      return;
+    }
     console.error(`[WS Server] Failed to create .claude symlink:`, error);
     throw error;
   }
@@ -930,6 +952,60 @@ function fanoutToSession(sessionId, msg) {
   return buffered;
 }
 
+// Canvas Agent (D5) — project-channel-per-canvas broadcast (simpler than
+// sessionRegistry: a canvas viewer is subscribed regardless of whether a worker is
+// currently running, since asset_created/task_updated events can originate from a
+// DIFFERENT session in the same workspace, or from the ingestor watching the
+// filesystem directly — there's no "live worker" gate here).
+const canvasChannels = new Map(); // canvasId -> Set<ws>
+
+function subscribeCanvas(canvasId, ws) {
+  let subs = canvasChannels.get(canvasId);
+  if (!subs) {
+    subs = new Set();
+    canvasChannels.set(canvasId, subs);
+  }
+  subs.add(ws);
+}
+
+function unsubscribeCanvas(canvasId, ws) {
+  const subs = canvasChannels.get(canvasId);
+  if (!subs) return;
+  subs.delete(ws);
+  if (subs.size === 0) canvasChannels.delete(canvasId);
+}
+
+function unsubscribeCanvasConnection(ws) {
+  for (const [canvasId, subs] of canvasChannels.entries()) {
+    subs.delete(ws);
+    if (subs.size === 0) canvasChannels.delete(canvasId);
+  }
+}
+
+/** Broadcast a canvas_event to every connection currently viewing this canvas workspace. */
+function broadcastCanvas(canvasId, event, payload) {
+  const subs = canvasChannels.get(canvasId);
+  if (!subs || subs.size === 0) return;
+  const msg = { type: 'canvas_event', canvasId, event, payload };
+  for (const sub of subs) sendMessage(sub, msg);
+}
+
+/**
+ * Verify the requesting user owns this canvas workspace before letting them subscribe —
+ * never trust a client-supplied canvasId (same rationale as project membership checks).
+ */
+async function verifyCanvasOwnership(cookie, canvasId, userId) {
+  try {
+    const response = await fetch(`${APP_URL}/api/canvases/${canvasId}`, { headers: { cookie } });
+    if (!response.ok) return false;
+    const data = await response.json();
+    return data.ownerUserId === userId;
+  } catch (error) {
+    console.error('[WS Server] Error verifying canvas ownership:', error);
+    return false;
+  }
+}
+
 function nextPreviewSeq(ws) {
   ws.__previewSeq = (ws.__previewSeq || 0) + 1;
   return ws.__previewSeq;
@@ -1015,9 +1091,16 @@ const WS_BACKPRESSURE_LOW = Number(process.env.WS_BACKPRESSURE_LOW_BYTES) || 1 *
 /**
  * Create a new empty session without requiring a user message
  * This is called when user explicitly clicks "New Session" button
+ *
+ * Canvas Agent (D5): pass canvasId to bind this session to a canvas workspace instead
+ * of (mutually exclusive with) a projectId — cwd resolves to the SHARED canvas
+ * workspace directory so every session in that workspace sees the same files.
  */
-async function handleCreateSession(ws, projectId) {
-  console.log('[WS Server] Creating new empty session', projectId ? `(project ${projectId})` : '');
+async function handleCreateSession(ws, projectId, canvasId) {
+  console.log(
+    '[WS Server] Creating new empty session',
+    projectId ? `(project ${projectId})` : canvasId ? `(canvas ${canvasId})` : ''
+  );
 
   try {
     // Generate new workspace session ID
@@ -1034,8 +1117,11 @@ async function handleCreateSession(ws, projectId) {
       console.warn('[WS Server] Skills sync failed (continuing):', syncError.message);
     }
 
-    // Get session-specific workspace
-    const workspacePath = getSessionWorkspace(ws.userId, workspaceSessionId);
+    // Get session workspace — canvas workspaces are SHARED across sessions, per-session
+    // workspaces are not.
+    const workspacePath = canvasId
+      ? getCanvasWorkspace(ws.userId, canvasId)
+      : getSessionWorkspace(ws.userId, workspaceSessionId);
     await ensureDirExists(workspacePath);
 
     // Create .claude symlink in workspace
@@ -1053,15 +1139,16 @@ async function handleCreateSession(ws, projectId) {
 
     // Persist empty session to DB immediately so it appears in history list.
     // Title will be updated when first message is sent. When arming "new chat in
-    // <project>", bind it to the Project at creation (race-free). If that bind fails
-    // (e.g. caller isn't a member → POST 403 → null), fall back to a loose session so
-    // session creation never breaks on a stale/invalid project arm.
+    // <project>"/"new chat in <canvas>", bind it at creation (race-free). If that bind
+    // fails (e.g. caller isn't the owner → POST 403 → null), fall back to a loose
+    // session so session creation never breaks on a stale/invalid arm.
+    const lineage = projectId ? { projectId } : canvasId ? { canvasId } : null;
     const persisted = await persistSession(
       ws.cookie, workspaceSessionId, null, claudeHome, '未命名',
-      projectId ? { projectId } : null,
+      lineage,
     );
-    if (!persisted && projectId) {
-      console.warn('[WS Server] Project-bound session persist failed; retrying as loose session');
+    if (!persisted && lineage) {
+      console.warn('[WS Server] Bound session persist failed; retrying as loose session');
       await persistSession(ws.cookie, workspaceSessionId, null, claudeHome, '未命名');
     }
 
@@ -1283,6 +1370,9 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     model: selectedModel = null,
     // Session KB scope (面板勾选): forwarded to the worker so kb_search restricts to it.
     kbIds = [],
+    // Canvas Agent (D5): client-supplied fallback; existingSession.canvasId (DB, set by
+    // handleCreateSession's persist) is the authoritative source once a session row exists.
+    canvasId: canvasIdOption = null,
   } = options;
   // Concurrent sessions (PRD 2026-06-15, FR1): we NO LONGER kill a running worker
   // when a new chat starts. Other sessions keep running in the background and
@@ -1396,25 +1486,37 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
       console.warn('[WS Server] Skills sync failed (continuing):', syncError.message);
     }
 
-    // Resolve the workspace this run operates in. Branches SHARE their source's workspace so
-    // the forked transcript's (absolute) file paths still resolve (a copy would break them;
-    // same-uid storage makes the cross-user read/write safe). Three cases:
+    // Resolve the workspace this run operates in.
+    //
+    // Canvas Agent (D5) takes priority over the branch logic below: a canvas workspace
+    // is single-owner (no member table, never shared/branched), so ALL its sessions
+    // resolve to the SAME shared directory regardless of which session triggered this
+    // turn. existingSession.canvasId (DB, set at create time) is authoritative;
+    // canvasIdOption is a fallback for the rare case a session row doesn't exist yet
+    // (shouldn't normally happen — handleCreateSession persists first).
+    const effectiveCanvasId = existingSession?.canvasId || canvasIdOption || null;
+
+    // Branches SHARE their source's workspace so the forked transcript's (absolute) file
+    // paths still resolve (a copy would break them; same-uid storage makes the
+    // cross-user read/write safe). Three cases (skipped entirely for canvas sessions):
     //   - creating a branch (isBranch): source = existingSession (D1)
     //   - continuing a branch (existingSession.branchedFromSessionId): load the source D1
     //   - normal: the requester's own session workspace
     let wsOwnerId = ws.userId;
     let wsSessionId = workspaceSessionId;
-    if (isBranch) {
+    if (!effectiveCanvasId && isBranch) {
       wsOwnerId = existingSession.userId;
       wsSessionId = existingSession.sdkSessionId;
-    } else if (existingSession?.branchedFromSessionId && ws.cookie) {
+    } else if (!effectiveCanvasId && existingSession?.branchedFromSessionId && ws.cookie) {
       const branchSource = await loadSessionById(ws.cookie, existingSession.branchedFromSessionId);
       if (branchSource) {
         wsOwnerId = branchSource.userId;
         wsSessionId = branchSource.sdkSessionId;
       }
     }
-    const workspacePath = getSessionWorkspace(wsOwnerId, wsSessionId);
+    const workspacePath = effectiveCanvasId
+      ? getCanvasWorkspace(ws.userId, effectiveCanvasId)
+      : getSessionWorkspace(wsOwnerId, wsSessionId);
     await ensureDirExists(workspacePath);
 
     // Create .claude symlink in workspace pointing to user's .claude directory
@@ -1459,6 +1561,9 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     workerEnv.CLAUDE_HOME = claudeHome;
     workerEnv.HOME = claudeHome;  // Override HOME so os.homedir() returns user dir
     workerEnv.WORKER_CWD = workspacePath;  // Per-Session workspace
+    // Canvas Agent (D5): tells the worker to register mcp__media-gen__* (canvas
+    // sessions only — regular chat sessions never see this tool).
+    if (effectiveCanvasId) workerEnv.CANVAS_ID = effectiveCanvasId;
 
     // Registry v2: admin-managed global variables (sealed over the internal API,
     // opened here just-in-time). Applied BEFORE model routing so ANTHROPIC_* routing
@@ -1721,6 +1826,11 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     // persists the forked SDK id onto D2 and tells the client to switch to D2.
     ws.workspaceSessionId = outputSessionId;
 
+    // Canvas Agent (D5): toolUseId -> generation_task id for THIS run, so the
+    // media_gen_task_result frame (which only carries toolUseId) can find the task row
+    // media_gen_task_started created. Scoped to this handleChat call's closure.
+    const mediaGenTaskIds = new Map();
+
     // Read responses line by line
     const rl = createInterface({ input: worker.stdout });
 
@@ -1855,6 +1965,69 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
               input: msg.input ?? {},
               seq: msg.seq,
             });
+          }
+        } else if (msg.type === 'media_gen_task_started') {
+          // Canvas Agent (D5): worker saw a mcp__media-gen__* tool_use content block
+          // (see ws-query-worker.mjs event loop) — create the generation_task row +
+          // reserve canvas slots via the internal API (ws-server has no direct DB
+          // access — see build-worker-env.js comment on why these files stay .js).
+          if (effectiveCanvasId) {
+            (async () => {
+              try {
+                const response = await fetch(`${APP_URL}/api/internal/canvas/tasks`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', cookie: ws.cookie },
+                  body: JSON.stringify({
+                    canvasId: effectiveCanvasId,
+                    sessionId: outputSessionId,
+                    kind: msg.kind || 't2i',
+                    params: msg.input || {},
+                  }),
+                });
+                if (!response.ok) {
+                  console.error('[WS Server] media_gen_task_started: task create failed', response.status, await response.text());
+                  return;
+                }
+                const task = await response.json();
+                mediaGenTaskIds.set(msg.toolUseId, task.id);
+                broadcastCanvas(effectiveCanvasId, 'task_created', task);
+              } catch (error) {
+                console.error('[WS Server] media_gen_task_started error:', error);
+              }
+            })();
+          }
+        } else if (msg.type === 'media_gen_task_result') {
+          if (effectiveCanvasId) {
+            (async () => {
+              const taskId = mediaGenTaskIds.get(msg.toolUseId);
+              if (!taskId) {
+                console.error('[WS Server] media_gen_task_result: no matching task for toolUseId', msg.toolUseId);
+                return;
+              }
+              mediaGenTaskIds.delete(msg.toolUseId);
+              try {
+                const response = await fetch(`${APP_URL}/api/internal/canvas/tasks/${taskId}/complete`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', cookie: ws.cookie },
+                  body: JSON.stringify(
+                    msg.isError
+                      ? { status: 'failed', error: msg.error || 'generation failed' }
+                      : { status: 'done', files: msg.files || [] }
+                  ),
+                });
+                if (!response.ok) {
+                  console.error('[WS Server] media_gen_task_result: task complete failed', response.status, await response.text());
+                  return;
+                }
+                const result = await response.json();
+                broadcastCanvas(effectiveCanvasId, 'task_updated', { taskId, status: msg.isError ? 'failed' : 'done', error: msg.error });
+                for (const asset of result.assets || []) {
+                  broadcastCanvas(effectiveCanvasId, 'asset_created', asset);
+                }
+              } catch (error) {
+                console.error('[WS Server] media_gen_task_result error:', error);
+              }
+            })();
           }
         } else if (msg.type === 'done') {
           worker.__terminalSent = true;
@@ -2037,8 +2210,9 @@ async function handleMessage(ws, msg) {
     case 'create_session':
       // Explicitly create a new empty session (without user message). Projects: an
       // optional projectId binds it to a Project at creation (race-free), used by
-      // "new chat in <project>".
-      await handleCreateSession(ws, message.projectId);
+      // "new chat in <project>". Canvas Agent (D5): canvasId is the same idea for a
+      // canvas workspace — mutually exclusive with projectId.
+      await handleCreateSession(ws, message.projectId, message.canvasId);
       break;
 
     case 'init_session':
@@ -2051,7 +2225,7 @@ async function handleMessage(ws, msg) {
         });
         return;
       }
-      await handleChat(ws, ' ', message.sessionId, { silentInit: true });
+      await handleChat(ws, ' ', message.sessionId, { silentInit: true, canvasId: message.canvasId });
       break;
 
     case 'chat':
@@ -2070,6 +2244,7 @@ async function handleMessage(ws, msg) {
         permissionTier: message.permissionTier,
         model: message.model,
         kbIds: message.kbIds,
+        canvasId: message.canvasId,
       });
       break;
 
@@ -2290,6 +2465,26 @@ async function handleMessage(ws, msg) {
       }
       break;
 
+    case 'subscribe_canvas':
+      // Canvas Agent (D5): join the broadcast channel for a canvas workspace's
+      // asset/task events. Ownership-gated (canvas_workspace has no member table).
+      if (!message.canvasId) {
+        sendMessage(ws, { type: 'error', code: 'invalid_message', message: 'Missing canvasId for subscribe_canvas', retriable: false });
+        return;
+      }
+      if (await verifyCanvasOwnership(ws.cookie, message.canvasId, ws.userId)) {
+        subscribeCanvas(message.canvasId, ws);
+      } else {
+        sendMessage(ws, { type: 'error', code: 'forbidden', message: 'Not the owner of that canvas workspace', retriable: false });
+      }
+      break;
+
+    case 'unsubscribe_canvas':
+      if (message.canvasId) {
+        unsubscribeCanvas(message.canvasId, ws);
+      }
+      break;
+
     case 'ping':
       sendMessage(ws, { type: 'pong' });
       break;
@@ -2396,6 +2591,7 @@ wss.on('connection', async (ws, request) => {
     // Just drop this connection from every session it was viewing; each worker is
     // reclaimed on its own completion / abort / idle safeguard.
     sessionRegistry.unsubscribeConnection(ws);
+    unsubscribeCanvasConnection(ws);
   });
 
   ws.on('error', (error) => {
