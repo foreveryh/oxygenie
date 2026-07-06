@@ -19,6 +19,7 @@ interface CanvasState {
   selectedAssetIds: string[];
   setInitialAssets: (assets: CanvasAssetDTO[]) => void;
   upsertAsset: (asset: CanvasAssetDTO) => void;
+  removeAssets: (assetIds: string[]) => void;
   upsertTask: (task: CanvasTask) => void;
   removeTask: (taskId: string) => void;
   setSelectedAssetIds: (ids: string[]) => void;
@@ -36,6 +37,12 @@ export const useCanvasStore = create<CanvasState>((set) => ({
     set({ assets: Object.fromEntries(assets.map((a) => [a.id, a])) }),
   upsertAsset: (asset) =>
     set((s) => ({ assets: { ...s.assets, [asset.id]: asset } })),
+  removeAssets: (assetIds) =>
+    set((s) => {
+      const ids = new Set(assetIds);
+      const assets = Object.fromEntries(Object.entries(s.assets).filter(([id]) => !ids.has(id)));
+      return { assets, selectedAssetIds: s.selectedAssetIds.filter((id) => !ids.has(id)) };
+    }),
   upsertTask: (task) =>
     set((s) => ({ tasks: { ...s.tasks, [task.id]: { ...s.tasks[task.id], ...task } } })),
   removeTask: (taskId) =>

@@ -16,6 +16,7 @@ import { useCanvasStore } from './canvas-store';
 import { useCanvasChannel } from './use-canvas-channel';
 import { ImageNode, type ImageNodeData } from './nodes/image-node';
 import { PlaceholderNode, type PlaceholderNodeData } from './nodes/placeholder-node';
+import { CanvasNodeToolbar } from './nodes/node-toolbar';
 import { updateAssetPos, type CanvasAssetDTO } from '~/server/function/canvas.server';
 
 const nodeTypes = { image: ImageNode, placeholder: PlaceholderNode };
@@ -112,6 +113,7 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
         type: 'placeholder',
         position: { x: t.reservedPositions![0].posX, y: t.reservedPositions![0].posY },
         data: {
+          taskId: t.id,
           prompt: t.params?.prompt,
           status: t.status === 'queued' ? 'queued' : t.status === 'failed' ? 'failed' : 'running',
           error: t.error,
@@ -137,6 +139,7 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
         <Controls showInteractive={false} />
+        <CanvasNodeToolbar />
       </ReactFlow>
     </div>
   );

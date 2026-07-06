@@ -26,7 +26,7 @@ import { sessionRegistry } from './src/server/concurrency/session-registry.js';
 import { resolveEffectivePermission } from './src/lib/permission-tier.js';
 import { PreviewAuth } from './src/preview/auth.js';
 import { PreviewRuntime } from './src/preview/runtime.js';
-import { buildWorkerEnv } from './src/server/models/build-worker-env.js';
+import { buildWorkerEnv, buildMediaGenEnv } from './src/server/models/build-worker-env.js';
 import { openSecret } from './src/server/security/secret-box.js';
 import { isSyntheticTranscriptEntry } from './src/server/history/transcript-filter.js';
 import IORedis from 'ioredis';
@@ -1319,6 +1319,37 @@ async function resolveModelForChat(cookie, modelId) {
   }
 }
 
+// Canvas Agent (D6): global default model for a media-gen capability (image/video),
+// same cache/shape as resolveModelForChat but keyed by capability, not modelId — no
+// per-project override (canvas has no projectId, D5). Non-fatal by design: a miss
+// just means buildMediaGenEnv leaves the worker env untouched, so gemini-image-runner.js
+// falls back to its own raw-env read (unlike chat, an unresolvable media-gen model
+// must not abort session creation).
+const mediaGenResolveCache = new Map(); // capability → { meta: object|null, expiresAt: number }
+
+async function resolveMediaGenCredential(cookie, capability) {
+  const cached = mediaGenResolveCache.get(capability);
+  if (cached && cached.expiresAt > Date.now()) return cached.meta;
+  try {
+    const response = await fetch(`${APP_URL}/api/models/resolve-default/${encodeURIComponent(capability)}`, {
+      headers: { cookie: cookie || '' },
+    });
+    if (!response.ok) {
+      // 404 (no default configured) and any other failure both mean "nothing to
+      // inject" — cache briefly either way so a missing config doesn't cost a fetch
+      // on every canvas generate_image call.
+      mediaGenResolveCache.set(capability, { meta: null, expiresAt: Date.now() + MODEL_RESOLVE_TTL_MS });
+      return null;
+    }
+    const meta = await response.json();
+    mediaGenResolveCache.set(capability, { meta, expiresAt: Date.now() + MODEL_RESOLVE_TTL_MS });
+    return meta;
+  } catch (error) {
+    console.error('[WS Server] media-gen resolve error (non-fatal):', error);
+    return null;
+  }
+}
+
 // ── Registry v2: global variables for the worker env ─────────────────────────
 // Fetched sealed from the app (/api/models/worker-vars), opened here with
 // KIN_SECRET_KEY, short-TTL cached like the model-resolve path. Reserved prefixes
@@ -1563,7 +1594,16 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     workerEnv.WORKER_CWD = workspacePath;  // Per-Session workspace
     // Canvas Agent (D5): tells the worker to register mcp__media-gen__* (canvas
     // sessions only — regular chat sessions never see this tool).
-    if (effectiveCanvasId) workerEnv.CANVAS_ID = effectiveCanvasId;
+    if (effectiveCanvasId) {
+      workerEnv.CANVAS_ID = effectiveCanvasId;
+      // D6: route media-gen to the admin-configured 'image' capability default
+      // (model-registry-v2, /admin/models) instead of a raw GEMINI_API_KEY env var.
+      // Non-fatal: no default configured yet → workerEnv untouched → gemini-image-
+      // runner.js falls back to its own process.env.GEMINI_API_KEY read (today's
+      // behavior, preserved for zero-admin-action deployments).
+      const imageMeta = await resolveMediaGenCredential(ws.cookie, 'image');
+      workerEnv = buildMediaGenEnv(imageMeta, workerEnv);
+    }
 
     // Registry v2: admin-managed global variables (sealed over the internal API,
     // opened here just-in-time). Applied BEFORE model routing so ANTHROPIC_* routing

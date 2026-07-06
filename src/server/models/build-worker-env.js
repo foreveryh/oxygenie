@@ -96,3 +96,41 @@ export function serializeCustomHeaders(headers) {
     .map(([k, v]) => `${k}: ${v}`)
     .join('\n');
 }
+
+/**
+ * buildMediaGenEnv — request-time provider routing for canvas media-gen (Canvas
+ * Agent, D6). Parallel to buildWorkerEnv but protocol-dispatched instead of
+ * Anthropic-only: media-gen capabilities (image/video) aren't restricted to one wire
+ * protocol the way 'chat' is, so each protocol gets its own tiny branch here — one
+ * today (gemini), more as providers are added. Unlike buildWorkerEnv, an unresolved
+ * or unrecognized-protocol model is NON-FATAL: returns sourceEnv unchanged so the
+ * caller falls back to whatever raw env var (e.g. GEMINI_API_KEY) may already be set,
+ * rather than failing the whole canvas session over a media-gen credential.
+ *
+ * @param {ModelRouteMeta|null|undefined} meta
+ * @param {Record<string,string|undefined>} sourceEnv
+ * @returns {Record<string,string|undefined>} a new env object (or sourceEnv itself if unresolved)
+ */
+export function buildMediaGenEnv(meta, sourceEnv) {
+  if (!meta || !meta.enabled || !meta.baseUrl || !meta.model) return sourceEnv;
+
+  let token = null;
+  try {
+    token = meta.credentialEncrypted ? openSecret(meta.credentialEncrypted, sourceEnv) : sourceEnv?.[meta.tokenEnv];
+  } catch (error) {
+    console.error(`[buildMediaGenEnv] credential open failed for ${meta.id}:`, error instanceof Error ? error.message : error);
+    return sourceEnv;
+  }
+  if (!token || !String(token).trim()) return sourceEnv;
+
+  const env = { ...sourceEnv };
+  if (meta.protocol === 'gemini') {
+    env.GEMINI_API_KEY = token;
+    env.GEMINI_BASE_URL = meta.baseUrl;
+    env.GEMINI_IMAGE_MODEL = meta.model;
+    return env;
+  }
+
+  // Unrecognized protocol for media-gen — no runner consumes it yet, leave env as-is.
+  return sourceEnv;
+}

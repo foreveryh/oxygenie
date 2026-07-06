@@ -12,6 +12,9 @@ export {
   // 返工1: stage composer attachments for the next runChat (reliable delivery path,
   // bypassing the assistant-ui runConfig set→send→reset race that dropped them).
   stagePendingAttachments,
+  // Canvas Agent (D5/F10): same side-channel pattern, for selected canvas assets.
+  stagePendingCanvasRefs,
+  type CanvasRefDescriptor,
   // Concurrent sessions (P2): detach the local run without killing the backend
   // worker (session switch / new chat); unsubscribe a left-behind session's stream.
   detachActiveRun,

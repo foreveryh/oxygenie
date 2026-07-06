@@ -5,10 +5,12 @@
  * plain `node` child process, no TS loader — see build-worker-env.js's header comment
  * for why every file it imports must be .js).
  *
- * Deliberate simplification for this slice: reads GEMINI_API_KEY directly from env
- * (mirrors glm-image's ZHIPU_API_KEY) instead of resolving through model-registry-v2's
- * DB-backed model_connection — that wiring is a follow-up, not needed to prove the
- * canvas pipeline end-to-end. Docs: https://ai.google.dev/gemini-api/docs/imagen
+ * Credentials: GEMINI_API_KEY/GEMINI_BASE_URL/GEMINI_IMAGE_MODEL in process.env. These
+ * are normally injected per-session by ws-server.mjs's buildMediaGenEnv (resolved from
+ * model-registry-v2's 'image' capability default, /admin/models) — this file stays
+ * ignorant of that and just reads env, so it also works standalone from a raw
+ * .env GEMINI_API_KEY when no registry default is configured (zero-admin-action
+ * fallback). Docs: https://ai.google.dev/gemini-api/docs/imagen
  */
 
 import { promises as fs } from 'node:fs';
@@ -69,10 +71,11 @@ async function callImagen({ prompt, count, aspectRatio, model, baseUrl, apiKey }
  * @param {number} [options.count=1] - 1-4
  * @param {string} [options.aspect='1:1'] - one of ASPECT_DIMENSIONS keys
  * @param {string} options.outputDir - absolute path; files written here as {uuid}.{ext}
- * @param {string} [options.model]
+ * @param {string} [options.model] - explicit override; else env GEMINI_IMAGE_MODEL; else DEFAULT_MODEL
  * @returns {Promise<{ files: Array<{ id: string, relPath: string, width: number, height: number }> }>}
  */
-export async function generateImage({ prompt, count = 1, aspect = '1:1', outputDir, model = DEFAULT_MODEL }) {
+export async function generateImage({ prompt, count = 1, aspect = '1:1', outputDir, model }) {
+  const resolvedModel = model || process.env.GEMINI_IMAGE_MODEL || DEFAULT_MODEL;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY environment variable is required');
@@ -85,7 +88,7 @@ export async function generateImage({ prompt, count = 1, aspect = '1:1', outputD
   const sampleCount = Math.min(4, Math.max(1, count));
   const baseUrl = process.env.GEMINI_BASE_URL || DEFAULT_BASE_URL;
 
-  const predictions = await callImagen({ prompt, count: sampleCount, aspectRatio, model, baseUrl, apiKey });
+  const predictions = await callImagen({ prompt, count: sampleCount, aspectRatio, model: resolvedModel, baseUrl, apiKey });
 
   await fs.mkdir(outputDir, { recursive: true });
 

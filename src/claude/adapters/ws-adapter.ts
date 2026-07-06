@@ -315,6 +315,60 @@ function classifyAttachment(attachment: AttachmentDescriptor): AttachmentHint {
   };
 }
 
+/** Canvas Agent (D5/F10) — a selected canvas asset, referenced in the outgoing prompt. */
+export type CanvasRefDescriptor = {
+  relPath: string;
+  type: 'image' | 'video';
+  width?: number;
+  height?: number;
+  durationSec?: number;
+};
+
+function extractRunConfigCanvasRefs(runConfig?: ChatModelRunOptions['runConfig']): CanvasRefDescriptor[] {
+  const custom = runConfig?.custom;
+  if (!custom || typeof custom !== 'object') return [];
+  const raw = (custom as { canvasRefs?: unknown }).canvasRefs;
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const candidate = item as Partial<CanvasRefDescriptor>;
+      if (typeof candidate.relPath !== 'string' || !candidate.relPath.trim()) return null;
+      if (candidate.type !== 'image' && candidate.type !== 'video') return null;
+      // Omit (not just `undefined`-set) keys so the inferred literal type actually
+      // matches CanvasRefDescriptor's optional fields for the type predicate below.
+      return {
+        relPath: candidate.relPath,
+        type: candidate.type,
+        ...(typeof candidate.width === 'number' ? { width: candidate.width } : {}),
+        ...(typeof candidate.height === 'number' ? { height: candidate.height } : {}),
+        ...(typeof candidate.durationSec === 'number' ? { durationSec: candidate.durationSec } : {}),
+      };
+    })
+    .filter((item): item is CanvasRefDescriptor => Boolean(item));
+}
+
+/**
+ * 【画布引用】block (impl spec §6.3) — lists the canvas assets selected when the
+ * message was sent, so the Agent knows what "these"/"this image" refers to without
+ * having to `ls` the workspace and guess. Same shape/placement as 【附件信息】.
+ */
+function buildCanvasRefsBlock(refs: CanvasRefDescriptor[]): string {
+  if (refs.length === 0) return '';
+  const lines: string[] = ['【画布引用】'];
+  refs.forEach((ref, index) => {
+    const dims = ref.type === 'image'
+      ? (ref.width && ref.height ? ` ${ref.width}x${ref.height}` : '')
+      : [
+          ref.durationSec !== undefined ? ` ${ref.durationSec.toFixed(1)}s` : '',
+          ref.width && ref.height ? ` ${ref.width}x${ref.height}` : '',
+        ].join('');
+    lines.push(`${index + 1}. ${ref.relPath} (${ref.type}${dims})`);
+  });
+  return lines.join('\n');
+}
+
 function extractRunConfigAttachments(runConfig?: ChatModelRunOptions['runConfig']): AttachmentDescriptor[] {
   const custom = runConfig?.custom;
   if (!custom || typeof custom !== 'object') return [];
@@ -326,11 +380,12 @@ function extractRunConfigAttachments(runConfig?: ChatModelRunOptions['runConfig'
       if (!item || typeof item !== 'object') return null;
       const candidate = item as Partial<AttachmentDescriptor>;
       if (typeof candidate.filePath !== 'string' || !candidate.filePath.trim()) return null;
+      // Omit (not just `undefined`-set) keys — same reasoning as extractRunConfigCanvasRefs.
       return {
-        originalName: typeof candidate.originalName === 'string' ? candidate.originalName : undefined,
+        ...(typeof candidate.originalName === 'string' ? { originalName: candidate.originalName } : {}),
         filePath: candidate.filePath,
-        mimeType: typeof candidate.mimeType === 'string' ? candidate.mimeType : undefined,
-        fileSize: typeof candidate.fileSize === 'number' ? candidate.fileSize : undefined,
+        ...(typeof candidate.mimeType === 'string' ? { mimeType: candidate.mimeType } : {}),
+        ...(typeof candidate.fileSize === 'number' ? { fileSize: candidate.fileSize } : {}),
       };
     })
     .filter((item): item is AttachmentDescriptor => Boolean(item));
@@ -407,6 +462,16 @@ let stagedAttachments: AttachmentDescriptor[] | null = null;
  */
 export function stagePendingAttachments(attachments: AttachmentDescriptor[] | null | undefined): void {
   stagedAttachments = attachments && attachments.length > 0 ? attachments : null;
+}
+
+// Canvas Agent (D5/F10) — same side-channel pattern as stagedAttachments above (proven
+// necessary by 返工1's lesson: the assistant-ui runConfig round-trip alone drops custom
+// data before send commits). selection-chips.tsx calls stagePendingCanvasRefs() right
+// before send with whatever's currently selected in canvasStore.
+let stagedCanvasRefs: CanvasRefDescriptor[] | null = null;
+
+export function stagePendingCanvasRefs(refs: CanvasRefDescriptor[] | null | undefined): void {
+  stagedCanvasRefs = refs && refs.length > 0 ? refs : null;
 }
 
 // Local id generator for the assistant message runChat() grows in the store.
@@ -978,12 +1043,14 @@ const ClaudeAgentWSAdapter: ChatModelAdapter = {
       const attachments = extractRunConfigAttachments(runConfig);
       const selectedSkill = extractRunConfigSkill(runConfig);
       const attachmentsBlock = buildAttachmentsBlock(attachments);
-      const fullPrompt = attachmentsBlock ? `${prompt}\n\n${attachmentsBlock}` : prompt;
-      // 返工1 instrumentation: confirm the 【附件信息】 block actually enters the prompt.
-      // A's bug evidence was server-side "content length: 7" (body only); after the fix
-      // this should show attachments > 0 and a fullPrompt much longer than the raw text.
+      const canvasRefs = extractRunConfigCanvasRefs(runConfig);
+      const canvasRefsBlock = buildCanvasRefsBlock(canvasRefs);
+      const fullPrompt = [prompt, attachmentsBlock, canvasRefsBlock].filter(Boolean).join('\n\n');
+      // 返工1 instrumentation: confirm the 【附件信息】/【画布引用】 blocks actually enter the
+      // prompt. A's bug evidence was server-side "content length: 7" (body only); after the
+      // fix this should show attachments/canvasRefs > 0 and fullPrompt much longer than raw.
       console.log(
-        `[WS Adapter] run: attachments=${attachments.length} promptLen=${prompt.length} fullPromptLen=${fullPrompt.length}`,
+        `[WS Adapter] run: attachments=${attachments.length} canvasRefs=${canvasRefs.length} promptLen=${prompt.length} fullPromptLen=${fullPrompt.length}`,
       );
 
       if (!prompt.trim()) {
@@ -1744,6 +1811,17 @@ export async function runChat(
     console.log('[WS Adapter] runChat: using', stagedAttachments.length, 'staged attachment(s)');
   }
   stagedAttachments = null;
+
+  // Canvas Agent (D5/F10): same override-once pattern as attachments above.
+  if (stagedCanvasRefs && stagedCanvasRefs.length > 0) {
+    const baseCustom = (effectiveRunConfig?.custom ?? {}) as Record<string, unknown>;
+    effectiveRunConfig = {
+      ...(effectiveRunConfig ?? {}),
+      custom: { ...baseCustom, canvasRefs: stagedCanvasRefs },
+    } as ChatModelRunOptions['runConfig'];
+    console.log('[WS Adapter] runChat: using', stagedCanvasRefs.length, 'staged canvas ref(s)');
+  }
+  stagedCanvasRefs = null;
 
   // Synthetic single-message input: the generator only reads the last user
   // message's text for the prompt (SDK keeps conversation context server-side).

@@ -38,6 +38,7 @@ import { ImagePreviewOverlay } from '~/components/claude-chat/overlay/image-prev
 import { type PermissionInfo } from '~/components/claude-chat/permission-badge';
 import { ChatComposerWithRef, type ChatComposerRef } from '~/components/claude-chat/chat-composer';
 import { A2ComposerPanel } from '~/components/claude-chat/a2composer-panel';
+import { SelectionChips } from '~/components/canvas/selection-chips';
 import { ApprovalPrompt } from '~/components/claude-chat/approval-prompt';
 import { WorkbenchDock, useWorkbenchAutoOpen } from '~/components/claude-chat/workbench-panel';
 import { SkillChip } from '~/components/claude-chat/skill-chip';
@@ -1785,6 +1786,10 @@ function ClaudeChatSurface({
 
                 {/* Projects C#2 (图1): viewing a session you don't own → replying branches. */}
                 {branchInfo.isViewingNonOwned && <BranchReplyBanner className="mb-2" />}
+
+                {/* Canvas Agent (D5/F10.2): selected-asset chips, self-contained (reads
+                    canvasStore directly — see selection-chips.tsx). */}
+                {canvasMode && <SelectionChips />}
 
                 <ChatComposerWithRef
                   composerRef={composerRef}

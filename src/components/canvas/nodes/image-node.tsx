@@ -18,7 +18,11 @@ export type ImageNodeData = {
  * "单击出现选择框（四角手柄...）"; corner-handle resize is separate, not built yet).
  */
 function ImageNodeComponent({ data, selected }: NodeProps & { data: ImageNodeData }) {
-  const src = `/api/canvases/${data.canvasId}/asset/${data.relPath}`;
+  // Perf (2026-07-06): request a thumbnail sized to the actual on-canvas box (2x for
+  // retina), not the full Imagen/Gemini source (~1024px+, ~1-2MB) — decoding/compositing
+  // full-res sources for a ~280px box is what made dragging janky. See asset route.
+  const thumbWidth = Math.ceil(Math.max(data.width, data.height) * 2);
+  const src = `/api/canvases/${data.canvasId}/asset/${data.relPath}?w=${thumbWidth}`;
   return (
     <div
       style={{ width: data.width, height: data.height }}

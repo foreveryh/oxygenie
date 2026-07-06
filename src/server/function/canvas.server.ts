@@ -8,11 +8,14 @@
 import { createServerFn } from '@tanstack/react-start';
 import { getRequest } from '@tanstack/react-start/server';
 import { z } from 'zod';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import path from 'node:path';
+import { unlink } from 'node:fs/promises';
 
 import { db } from '~/db/db-config';
 import { canvasWorkspace, canvasAsset, type CanvasAssetMeta } from '~/db/schema';
 import { auth } from '~/server/auth.server';
+import { getCanvasWorkspacePath } from '~/server/canvas/workspace-path';
 
 const requireUser = async () => {
   const { headers } = getRequest();
@@ -143,5 +146,49 @@ export const updateAssetPos = createServerFn({ method: 'POST' })
         ...(data.height !== undefined && { height: data.height }),
       })
       .where(eq(canvasAsset.id, data.assetId));
+    return { success: true };
+  });
+
+/**
+ * Delete assets from the canvas (D1: soft-delete DB row + unlink sandbox file). Single
+ * fn handles both the F4 single-select 🗑 and multi-select batch delete — the button set
+ * is identical, only the count differs.
+ */
+export const deleteAssets = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({ assetIds: z.array(z.string().uuid()).min(1) }))
+  .handler(async ({ data }): Promise<{ success: true }> => {
+    const u = await requireUser();
+
+    const rows = await db
+      .select({ id: canvasAsset.id, canvasId: canvasAsset.canvasId, relPath: canvasAsset.relPath })
+      .from(canvasAsset)
+      .where(and(inArray(canvasAsset.id, data.assetIds), isNull(canvasAsset.deletedAt)));
+    if (rows.length === 0) return { success: true };
+
+    // Reject the whole batch unless every asset belongs to a workspace this user owns —
+    // simpler and safer than partial success across a mixed-ownership request.
+    const canvasIds = [...new Set(rows.map((r) => r.canvasId))];
+    const workspaces = await db
+      .select({ id: canvasWorkspace.id, ownerUserId: canvasWorkspace.ownerUserId })
+      .from(canvasWorkspace)
+      .where(inArray(canvasWorkspace.id, canvasIds));
+    const ownedIds = new Set(workspaces.filter((w) => w.ownerUserId === u.id).map((w) => w.id));
+    if (!canvasIds.every((id) => ownedIds.has(id))) throw new Error('FORBIDDEN');
+
+    await db
+      .update(canvasAsset)
+      .set({ deletedAt: new Date() })
+      .where(inArray(canvasAsset.id, rows.map((r) => r.id)));
+
+    // Best-effort unlink — a missing file (already gone, or an asset row with no
+    // relPath) must not fail the delete; the DB soft-delete is the source of truth.
+    await Promise.all(
+      rows
+        .filter((r) => r.relPath)
+        .map((r) =>
+          unlink(path.join(getCanvasWorkspacePath(u.id, r.canvasId), r.relPath as string)).catch(() => {})
+        )
+    );
+
     return { success: true };
   });

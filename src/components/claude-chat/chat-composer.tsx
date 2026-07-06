@@ -56,8 +56,9 @@ import { formatBytes } from '~/lib/upload-limits';
 import { useChatSessionStore } from '~/lib/chat-session-store';
 import { useDraftAutoSave } from '~/lib/hooks/use-session-protection';
 import { buildSkillMarker, injectSkillMarker } from '~/lib/skills/skill-marker';
-import { stagePendingAttachments } from '~/claude/adapters';
+import { stagePendingAttachments, stagePendingCanvasRefs, type CanvasRefDescriptor } from '~/claude/adapters';
 import { trackClaudeAgentQuerySent } from '~/lib/observability/posthog-events';
+import { useCanvasStore } from '~/components/canvas/canvas-store';
 
 /**
  * Props for ChatComposer component
@@ -166,6 +167,13 @@ export function ChatComposer({
   // (会话文件→Files, info→Context), instead of separate popovers — one place, the
   // workbench owns it. Shared store because the workbench is a far-apart sibling here.
   const openWorkbenchTab = useWorkbenchUI((s) => s.openTab);
+  // Canvas Agent (D5/F10): always call the hook (rules of hooks), but only ACT on it
+  // when canvasMode — canvasStore is a global singleton, so on a non-canvas page this
+  // could carry stale state from a prior canvas visit if we didn't gate on canvasMode
+  // explicitly at every use site below.
+  const canvasSelectedAssetIds = useCanvasStore((s) => s.selectedAssetIds);
+  const canvasAssets = useCanvasStore((s) => s.assets);
+  const setCanvasSelectedAssetIds = useCanvasStore((s) => s.setSelectedAssetIds);
   const composerText = useAssistantState(({ composer }) => composer.text);
   const composerRunConfig = useAssistantState(({ composer }) => composer.runConfig);
   const composerIsEditing = useAssistantState(({ composer }) => composer.isEditing);
@@ -441,6 +449,19 @@ export function ChatComposer({
         console.log('[Composer] staging', pendingAttachments.length, 'attachment(s) for send:', pendingAttachments.map((a) => a.filePath));
       }
       stagePendingAttachments(pendingAttachments);
+      // Canvas Agent (D5/F10.2): same side-channel, gated on canvasMode so a stale
+      // selection from a prior canvas visit never leaks into a non-canvas send.
+      if (canvasMode && canvasSelectedAssetIds.length > 0) {
+        const refs: CanvasRefDescriptor[] = canvasSelectedAssetIds
+          .map((id) => canvasAssets[id])
+          .filter((a): a is NonNullable<typeof a> => Boolean(a) && a.type === 'image')
+          .map((a) => ({ relPath: a.relPath as string, type: 'image', width: a.width, height: a.height }));
+        stagePendingCanvasRefs(refs);
+        // 发送后清空选中 (impl spec §6.3, matches the reference product's behavior).
+        setCanvasSelectedAssetIds([]);
+      } else {
+        stagePendingCanvasRefs(null);
+      }
       api.composer().send();
       if (Object.prototype.hasOwnProperty.call(baseCustom, 'attachments') || Object.prototype.hasOwnProperty.call(baseCustom, 'skill')) {
         api.composer().setRunConfig({
@@ -462,7 +483,7 @@ export function ChatComposer({
     }
 
     sendNow();
-  }, [api, canSend, composerHasText, isRunning, readyAttachments, currentSessionId, onSend, composerRunConfig, composerText, selectedSkill]);
+  }, [api, canSend, composerHasText, isRunning, readyAttachments, currentSessionId, onSend, composerRunConfig, composerText, selectedSkill, canvasMode, canvasSelectedAssetIds, canvasAssets, setCanvasSelectedAssetIds]);
 
   return (
     <ComposerPrimitive.Root

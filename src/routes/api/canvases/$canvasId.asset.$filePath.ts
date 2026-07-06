@@ -1,40 +1,35 @@
 /**
  * Canvas Agent (D5) — asset file serving.
  *
- * GET /api/canvases/:canvasId/asset/:filePath
+ * GET /api/canvases/:canvasId/asset/:filePath[?w=NNN]
  *
  * Mirrors src/routes/api/workspace/$sessionId.file.$filePath.ts's raw-serve branch, but
  * resolves the SHARED canvas workspace path (not a per-session one). Path construction
  * duplicates ws-server.mjs's getCanvasWorkspace()/sanitizeId() exactly — that's where
  * the files actually get written, so this must match byte-for-byte or lookups 404.
  * Image-only in this slice (no video Range streaming — see spec's M2-T4, deferred).
+ *
+ * `?w=` (perf fix, 2026-07-06): Gemini/Imagen outputs land at ~1024px+, several hundred
+ * KB to ~2MB each — but canvas nodes display at ~280 CSS px (slot-fitted, see
+ * slot-layout.ts). Decoding/compositing the FULL source for that tiny box is what made
+ * dragging janky (measured: avg frame time went from ~8ms warm to 800ms+/max ~2000ms on
+ * a fresh load with un-decoded images) — CSS scaling never reduces decode cost, only a
+ * genuinely smaller source does. `w` resizes (fit:inside, no upscale) + re-encodes to
+ * webp via sharp, cached same as the original. Ignored when `download=1` (always wants
+ * the original bytes) or on non-raster extensions (gif thumbnails aren't worth the
+ * complexity here).
  */
 
 import { createFileRoute } from '@tanstack/react-router';
 import { readFile, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
+import sharp from 'sharp';
 import { db } from '~/db/db-config';
 import { canvasWorkspace } from '~/db/schema';
 import { requireUser } from '~/server/require-user';
 import { validateRelativePath } from '~/server/security/validate-relative-path';
-
-function sanitizeId(id: string): string {
-  return id.replace(/[/\\.]+/g, '_').replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
-function resolveSessionsRoot(): string {
-  const envRoot = process.env.CLAUDE_SESSIONS_ROOT;
-  if (envRoot && envRoot.trim()) return path.resolve(envRoot.trim());
-  const dockerPath = '/data/users';
-  if (existsSync(dockerPath)) return dockerPath;
-  return path.join(process.cwd(), 'user-data');
-}
-
-function getCanvasWorkspacePath(userId: string, canvasId: string): string {
-  return path.join(resolveSessionsRoot(), sanitizeId(userId), 'canvases', sanitizeId(canvasId), 'workspace');
-}
+import { getCanvasWorkspacePath } from '~/server/canvas/workspace-path';
 
 const CONTENT_TYPE_BY_EXT: Record<string, string> = {
   '.png': 'image/png',
@@ -43,6 +38,9 @@ const CONTENT_TYPE_BY_EXT: Record<string, string> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
 };
+
+const RESIZABLE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+const MAX_THUMB_WIDTH = 1024; // guards against a client requesting an absurd/negative size
 
 function getContentType(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
@@ -90,16 +88,36 @@ export const Route = createFileRoute('/api/canvases/$canvasId/asset/$filePath')(
         }
 
         const fullFilePath = path.join(getCanvasWorkspacePath(user.id, canvasId), filePath);
+        const searchParams = new URL(request.url).searchParams;
+        const download = searchParams.get('download') === '1';
+        const requestedWidth = Number(searchParams.get('w'));
+        const thumbWidth =
+          !download && RESIZABLE_EXTS.has(path.extname(filePath).toLowerCase()) && Number.isFinite(requestedWidth) && requestedWidth > 0
+            ? Math.min(Math.round(requestedWidth), MAX_THUMB_WIDTH)
+            : null;
 
         try {
           const stats = await stat(fullFilePath);
           if (!stats.isFile()) {
             return Response.json({ error: 'Path is not a file' }, { status: 400 });
           }
-          const buffer = await readFile(fullFilePath);
-          return new Response(buffer, {
-            headers: { 'content-type': getContentType(filePath), 'cache-control': 'private, max-age=3600' },
+          let buffer = await readFile(fullFilePath);
+          let contentType = getContentType(filePath);
+          if (thumbWidth) {
+            buffer = await sharp(buffer)
+              .resize({ width: thumbWidth, withoutEnlargement: true })
+              .webp({ quality: 82 })
+              .toBuffer();
+            contentType = 'image/webp';
+          }
+          const headers = new Headers({
+            'content-type': contentType,
+            'cache-control': 'private, max-age=3600',
           });
+          if (download) {
+            headers.set('content-disposition', `attachment; filename="${path.basename(filePath)}"`);
+          }
+          return new Response(buffer, { headers });
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
             return Response.json({ error: 'File not found' }, { status: 404 });
