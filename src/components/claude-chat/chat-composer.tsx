@@ -49,7 +49,7 @@ import { ModelPicker } from './model-picker';
 import { ToolbarStatus, type AgentStatusType } from './claude-status';
 import { McpStatusIndicator } from './mcp-status-indicator';
 import { useIntlayer } from 'react-intlayer';
-import { toLocalizedString } from '~/lib/utils';
+import { cn, toLocalizedString } from '~/lib/utils';
 import { useMessageAttachments, type PendingAttachment } from '~/lib/utils/message-attachments';
 import { useWorkspaceUploads, type UploadItem } from '~/lib/hooks/use-workspace-uploads';
 import { formatBytes } from '~/lib/upload-limits';
@@ -105,6 +105,17 @@ export interface ChatComposerProps {
   /** Called after a sent message's attachments are persisted (so the thread can
    *  refresh and show the file chip live, not only after a session switch). */
   onAttachmentsPersisted?: () => void;
+  /** Canvas Agent (D5): narrow sidebar, not a full-width page. Drives:
+   *  - translucent/backdrop-blur background instead of solid `bg-card` (same
+   *    `bg-card/NN backdrop-blur-sm` convention as a2composer-panel.tsx's bucket bar
+   *    and this file's own attachment-remove button);
+   *  - hides Workspace/Session-Files/Session-Info buttons: the latter two dispatch to
+   *    WorkbenchDock tabs, and WorkbenchDock isn't mounted in canvas mode (see
+   *    claude-chat-controller.tsx's `!canvasMode && <WorkbenchDock/>`) — showing them
+   *    would be dead clicks. Also just frees up width: at ~380px the full button row
+   *    (model picker + 3 panel toggles + permission tier + mcp status + send) doesn't
+   *    fit and visibly overflows past the composer's rounded border. */
+  canvasMode?: boolean;
 }
 
 /**
@@ -147,6 +158,7 @@ export function ChatComposer({
   onClearSelectedSkill,
   onSkillSelect,
   onAttachmentsPersisted,
+  canvasMode = false,
 }: ChatComposerProps) {
   const content = useIntlayer('claude-chat');
   const api = useAssistantApi();
@@ -456,7 +468,10 @@ export function ChatComposer({
     <ComposerPrimitive.Root
       data-composer-root="true"
       data-dragging={isDragging || undefined}
-      className="relative z-30 shrink-0 mx-auto flex w-full max-w-3xl flex-col overflow-visible rounded-2xl border border-border/70 bg-card p-0.5 shadow-md transition-shadow duration-200 focus-within:shadow-lg hover:shadow-lg data-[dragging]:border-primary data-[dragging]:ring-2 data-[dragging]:ring-primary/40"
+      className={cn(
+        'relative z-30 shrink-0 mx-auto flex w-full max-w-3xl flex-col overflow-visible rounded-2xl border border-border/70 p-0.5 shadow-md transition-shadow duration-200 focus-within:shadow-lg hover:shadow-lg data-[dragging]:border-primary data-[dragging]:ring-2 data-[dragging]:ring-primary/40',
+        canvasMode ? 'bg-card/90 backdrop-blur-sm' : 'bg-card'
+      )}
       onSubmit={handleSend}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -532,8 +547,10 @@ export function ChatComposer({
             {/* Model picker (multi-model) - only show when not running */}
             {!isRunning && <ModelPicker />}
 
-            {/* Workspace Toggle Button - only show when not running */}
-            {!isRunning && (
+            {/* Workspace Toggle Button - only show when not running. Hidden in canvas
+                mode: not core to an image-gen workflow, and frees width (see canvasMode
+                doc comment on ChatComposerProps). */}
+            {!isRunning && !canvasMode && (
               <div className="relative">
                 <button
                   type="button"
@@ -571,8 +588,10 @@ export function ChatComposer({
               </div>
             )}
 
-            {/* Session Files Button - only show when not running */}
-            {!isRunning && (
+            {/* Session Files Button - only show when not running. Hidden in canvas mode:
+                it opens a WorkbenchDock tab, and WorkbenchDock isn't mounted there (see
+                claude-chat-controller.tsx) — showing this button would be a dead click. */}
+            {!isRunning && !canvasMode && (
               <div className="relative">
                 <button
                   type="button"
@@ -589,8 +608,9 @@ export function ChatComposer({
 
             {/* Session Info → opens the workbench Context tab (model · capabilities ·
                 tokens) — same content as the old popover, now unified + always clickable
-                (gated only on having a session, not on sessionMetadata being loaded). */}
-            {!isRunning && (
+                (gated only on having a session, not on sessionMetadata being loaded).
+                Hidden in canvas mode for the same reason as Session Files above. */}
+            {!isRunning && !canvasMode && (
               <button
                 type="button"
                 onClick={() => void withSession(() => openWorkbenchTab('context'))}
