@@ -22,6 +22,9 @@ export type UsageBody = {
   totalCostUsd?: number;
   modelUsage?: Record<string, ModelUsage> | null;
   isError?: boolean;
+  // T2: optional caller-provided runId so ws-server can correlate usage_record
+  // with run_summary using the same key.
+  runId?: string | null;
 };
 
 export type UsageRow = {

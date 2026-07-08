@@ -34,7 +34,7 @@ export const Route = createFileRoute('/api/usage/')({
         const user = await requireUser(request);
 
         const body = (await request.json()) as UsageBody;
-        const runId = `run_${randomUUID()}`;
+        const runId = body.runId ?? `run_${randomUUID()}`;
         const rows = buildUsageRows(user.id, body, runId);
 
         await db.insert(usageRecord).values(rows);

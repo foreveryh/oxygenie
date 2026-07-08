@@ -3,8 +3,9 @@
  *
  * Runtime latency/throughput trends from perf_sample (+ rag_search_trace).
  * Range switches re-run the server fns. Metrics never include conversation content.
- * Runtime TTFT is P3; the TTFT column under Baseline runs is fed by the load-test
- * harness (non-runtime scenarios).
+ * Runtime TTFT + queue wait landed with Eval Harness PR-1 (T5) — see the TTFT/Queue
+ * cards below. The TTFT column under Baseline runs is a SEPARATE metric fed by the
+ * load-test harness (non-runtime scenario), not this one.
  */
 
 import * as React from 'react';
@@ -138,6 +139,8 @@ function AdminPerformancePage() {
         />
         <MetricCard label="API p95" value={ms(overview.apiMs.p95)} />
         <MetricCard label="RAG search p95" value={ms(overview.rag.p95)} hint={`${overview.rag.count} searches`} />
+        <MetricCard label="TTFT p95" value={ms(overview.ttftMs.p95)} hint={`p50 ${ms(overview.ttftMs.p50)}`} />
+        <MetricCard label="Queue wait p95" value={ms(overview.queuedMs.p95)} hint={`p50 ${ms(overview.queuedMs.p50)}`} />
       </div>
 
       <Card className="mt-6">

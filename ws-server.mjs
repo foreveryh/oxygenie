@@ -24,6 +24,7 @@ import { Semaphore } from './src/server/concurrency/semaphore.js';
 import { shouldReapIdle } from './src/server/concurrency/idle-reaper.js';
 import { sessionRegistry } from './src/server/concurrency/session-registry.js';
 import { resolveEffectivePermission } from './src/lib/permission-tier.js';
+import { classifyTerminal } from './src/shared/error-taxonomy.js';
 import { PreviewAuth } from './src/preview/auth.js';
 import { PreviewRuntime } from './src/preview/runtime.js';
 import { buildWorkerEnv, buildMediaGenEnv } from './src/server/models/build-worker-env.js';
@@ -404,6 +405,29 @@ async function persistSession(cookie, workspaceSessionId, realSdkSessionId, clau
 }
 
 /**
+ * T5: single source of truth for the t0/t1/t2 boundary computation, shared by
+ * recordPerf (called on the `result` event) and recordRunSummary (called on
+ * worker close) so the two never drift apart.
+ *   t0 = chatFrameReceivedAt (ws-server received the chat frame)
+ *   t1 = semaphoreAcquiredAt (both concurrency permits held; spawn begins)
+ *   t2 = firstTokenAt (first content-bearing assistant event: text/thinking/tool_use)
+ *   queued_ms = t1 - t0; ttft_ms = t2 - t1 (spawn overhead counts toward ttft, not queue)
+ * @param {object} stats - worker.__runStats
+ * @returns {{ ttftMs: number|null, queuedMs: number|null }}
+ */
+function computeTtftAndQueued(stats) {
+  const ttftMs =
+    stats.firstTokenAt && stats.semaphoreAcquiredAt
+      ? stats.firstTokenAt - stats.semaphoreAcquiredAt
+      : null;
+  const queuedMs =
+    stats.semaphoreAcquiredAt && stats.chatFrameReceivedAt
+      ? stats.semaphoreAcquiredAt - stats.chatFrameReceivedAt
+      : null;
+  return { ttftMs, queuedMs };
+}
+
+/**
  * P2-1/P2-3: Record per-run usage and (when metering is enabled) charge credits.
  *
  * Extracts token/turn/cost data from the SDK `result` event and posts it to
@@ -416,7 +440,7 @@ async function persistSession(cookie, workspaceSessionId, realSdkSessionId, clau
  * @param {object} ws - The client WebSocket (provides cookie + workspaceSessionId)
  * @param {object} event - The SDK `result` event
  */
-async function recordUsage(ws, event, sessionId = ws.workspaceSessionId) {
+async function recordUsage(ws, event, sessionId = ws.workspaceSessionId, runId = null) {
   try {
     const response = await fetch(`${APP_URL}/api/usage`, {
       method: 'POST',
@@ -435,6 +459,8 @@ async function recordUsage(ws, event, sessionId = ws.workspaceSessionId) {
         modelUsage: event.modelUsage ?? null,
         // result is_error, or any non-success subtype, counts as an errored run
         isError: event.is_error === true || (event.subtype && event.subtype !== 'success'),
+        // T2: caller-provided runId so usage_record and run_summary share the key.
+        runId,
       }),
     });
 
@@ -473,7 +499,7 @@ async function recordUsage(ws, event, sessionId = ws.workspaceSessionId) {
  * @param {object} event - The SDK `result` event
  * @param {string|null} sessionId - This run's output session id
  */
-async function recordPerf(ws, event, sessionId) {
+async function recordPerf(ws, event, sessionId, runStats = null) {
   try {
     const samples = [];
     const route = 'ws.generate';
@@ -501,6 +527,18 @@ async function recordPerf(ws, event, sessionId) {
     }
     if (Number.isFinite(apiMs) && apiMs > 0) {
       samples.push({ ...base, metric: 'generation.api_ms', value: apiMs, unit: 'ms' });
+    }
+    // T5 (Eval Harness M1): surface the same ttft/queued figures that land in
+    // run_summary into perf_sample too, so the Admin Performance page's runtime
+    // trend charts (which only read perf_sample) can show them.
+    if (runStats) {
+      const { ttftMs, queuedMs } = computeTtftAndQueued(runStats);
+      if (Number.isFinite(ttftMs) && ttftMs > 0) {
+        samples.push({ ...base, metric: 'generation.ttft_ms', value: ttftMs, unit: 'ms' });
+      }
+      if (Number.isFinite(queuedMs) && queuedMs >= 0) {
+        samples.push({ ...base, metric: 'generation.queued_ms', value: queuedMs, unit: 'ms' });
+      }
     }
     if (samples.length === 0) return;
 
@@ -543,6 +581,78 @@ async function recordAuditEvent(cookie, action, target, meta = {}) {
     }
   } catch (error) {
     console.error('[WS Server] Error recording audit:', error);
+  }
+}
+
+/**
+ * T3: Redact sensitive content keys from an approval request input object before
+ * writing to audit_log. Keeps paths/command strings so the audit trail answers
+ * "what was denied"; omits actual file contents / prompts.
+ */
+function redactApprovalInput(input) {
+  if (!input || typeof input !== 'object') return '{}';
+  const clone = { ...input };
+  for (const key of ['content', 'new_string', 'old_string', 'prompt']) {
+    if (key in clone) clone[key] = '[omitted]';
+  }
+  return JSON.stringify(clone).slice(0, 200);
+}
+
+/**
+ * T2: Persist the per-run summary. Called exactly once per worker close.
+ * Fire-and-forget — telemetry must never block chat or affect the run.
+ *
+ * @param {string} cookie - Auth cookie for the acting user
+ * @param {object} stats - worker.__runStats accumulated during the run
+ * @param {string} terminalState - 'done' | 'error' | 'aborted' | 'worker_crash'
+ */
+async function recordRunSummary(cookie, stats, terminalState) {
+  try {
+    const errorType = classifyTerminal({
+      terminalState,
+      intentionalAbort: terminalState === 'aborted',
+      lastResultEvent: stats.lastResultEvent,
+      approvalDenyCount: stats.approvalDenyCount,
+      lastToolErrorWasDenied: stats.lastToolErrorWasDenied,
+      lastToolError: stats.lastToolError,
+      stderrTail: stats.stderrTail,
+    });
+
+    const { ttftMs, queuedMs } = computeTtftAndQueued(stats);
+
+    const response = await fetch(`${APP_URL}/api/run-summary`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie,
+      },
+      body: JSON.stringify({
+        runId: stats.runId,
+        sessionId: stats.sessionId,
+        model: stats.model,
+        terminalState,
+        errorType,
+        errorDetail: {},
+        ttftMs,
+        totalMs: stats.totalMs,
+        queuedMs,
+        toolCallCount: stats.toolCallCount,
+        toolErrorCount: stats.toolErrorCount,
+        toolCallsByName: stats.toolCallsByName,
+        toolErrorsByName: stats.toolErrorsByName,
+        approvalRequestCount: stats.approvalRequestCount,
+        approvalDenyCount: stats.approvalDenyCount,
+        numTurns: stats.numTurns,
+        resumedFromRunId: null,
+        recoveredFromState: null,
+        evalTag: stats.evalTag,
+      }),
+    });
+    if (!response.ok) {
+      console.error('[WS Server] Failed to record run summary:', response.status, await response.text());
+    }
+  } catch (error) {
+    console.error('[WS Server] Error recording run summary:', error);
   }
 }
 
@@ -1404,6 +1514,8 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     // Canvas Agent (D5): client-supplied fallback; existingSession.canvasId (DB, set by
     // handleCreateSession's persist) is the authoritative source once a session row exists.
     canvasId: canvasIdOption = null,
+    // T5: when the chat frame arrived, measured in handleMessage.
+    chatFrameReceivedAt = null,
   } = options;
   // Concurrent sessions (PRD 2026-06-15, FR1): we NO LONGER kill a running worker
   // when a new chat starts. Other sessions keep running in the background and
@@ -1456,6 +1568,8 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     }
     // The OUTPUT session: a fresh id (D2) for a branch, else the resumed/new session itself.
     const outputSessionId = isBranch ? generateSessionId() : workspaceSessionId;
+    // T2: one runId shared by usage_record and run_summary for this run.
+    const runId = `run_${crypto.randomUUID()}`;
     // What the SDK resumes: for a branch, the SOURCE's real SDK session id (its transcript),
     // which the worker then forks (forkSession:true) → a NEW forked id comes back on the init
     // event and is persisted to D2. For a normal turn, the usual resume id.
@@ -1785,6 +1899,10 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     }
     await workerSemaphore.acquire();
 
+    // T5: both the per-user and global permits are now held — this is t1.
+    // queued_ms = t1 - chatFrameReceivedAt; ttft_ms begins here (includes spawn).
+    const semaphoreAcquiredAt = Date.now();
+
     // S1 — both permits are now held. Define their releases (flag-based) and ARM the
     // leak net BEFORE spawn, so a throw ANYWHERE in setup frees both permits and
     // cleans up. `worker` is a `let` assigned at spawn, so the net stays valid even
@@ -1833,7 +1951,38 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     // (done/error/aborted). If the worker dies without one (e.g. a crash), the
     // close handler emits a terminal error so the client never hangs "running".
     worker.__terminalSent = false;
+    worker.__terminalError = false;
     worker.__intentionalAbort = false;
+
+    // T2/T3/T5: per-run accumulator. Hot path only does memory writes; close handler
+    // flushes once. toolUseIdToName maps tool_use ids to tool names so that a later
+    // tool_result.is_error can be attributed to the right tool. deniedToolUseIds
+    // tracks which tools were explicitly denied by the user; their is_error results
+    // are NOT counted as tool failures (they are permission_denied).
+    worker.__runStats = {
+      runId,
+      sessionId: outputSessionId,
+      userId: ws.userId,
+      evalTag: null,
+      chatFrameReceivedAt,
+      semaphoreAcquiredAt,
+      firstTokenAt: null,
+      model: null,
+      numTurns: 0,
+      totalMs: null,
+      lastResultEvent: null,
+      lastToolError: false,
+      lastToolErrorWasDenied: false,
+      toolUseIdToName: new Map(),
+      deniedToolUseIds: new Set(),
+      toolCallCount: 0,
+      toolErrorCount: 0,
+      toolCallsByName: {},
+      toolErrorsByName: {},
+      approvalRequestCount: 0,
+      approvalDenyCount: 0,
+      stderrTail: '',
+    };
 
     // Send query request to worker
     // Pass sdkResumeId for SDK conversation resume
@@ -1980,12 +2129,74 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
               });
             }
           }
+          // T2/T5: capture result event fields for the run_summary and tool accounting.
+          if (event.type === 'result') {
+            worker.__runStats.lastResultEvent = event;
+            worker.__runStats.numTurns = event.num_turns ?? 0;
+            worker.__runStats.totalMs = Number.isFinite(Number(event.duration_ms)) ? Number(event.duration_ms) : null;
+            if (event.modelUsage && typeof event.modelUsage === 'object') {
+              const models = Object.keys(event.modelUsage);
+              if (models.length > 0) worker.__runStats.model = models[0];
+            }
+          }
+
+          // T2: count tool_use blocks on assistant events and tool_result errors on user events.
+          // SDK message events carry content under event.message.content (see
+          // ws-query-worker.mjs assistant handling / ws-adapter.ts), NOT event.content.
+          if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+            for (const block of event.message.content) {
+              if (block?.type === 'tool_use' && block.id) {
+                worker.__runStats.toolCallCount++;
+                if (block.name) {
+                  worker.__runStats.toolUseIdToName.set(block.id, block.name);
+                  // M1: per-tool call denominator (mirrors toolErrorsByName's numerator)
+                  // so the report can compute a success rate per tool, not just a raw count.
+                  worker.__runStats.toolCallsByName[block.name] =
+                    (worker.__runStats.toolCallsByName[block.name] || 0) + 1;
+                }
+                // T5: first content-bearing assistant event marks TTFT start boundary (t2).
+                if (worker.__runStats.firstTokenAt === null) {
+                  worker.__runStats.firstTokenAt = Date.now();
+                }
+              } else if (
+                (block?.type === 'text' || block?.type === 'thinking') &&
+                worker.__runStats.firstTokenAt === null
+              ) {
+                worker.__runStats.firstTokenAt = Date.now();
+              }
+            }
+          } else if (event.type === 'user' && Array.isArray(event.message?.content)) {
+            for (const block of event.message.content) {
+              if (block?.type === 'tool_result' && block.is_error !== true) {
+                // A later successful tool_result clears the "last tool errored" state —
+                // lastToolError means the MOST RECENT tool_result, not "any error ever"
+                // (else one recovered transient error misattributes a later api_error).
+                worker.__runStats.lastToolError = false;
+                worker.__runStats.lastToolErrorWasDenied = false;
+              } else if (block?.type === 'tool_result' && block.is_error === true) {
+                worker.__runStats.lastToolError = true;
+                const wasDenied =
+                  block.tool_use_id && worker.__runStats.deniedToolUseIds.has(block.tool_use_id);
+                worker.__runStats.lastToolErrorWasDenied = !!wasDenied;
+                if (!wasDenied) {
+                  // Deny-induced errors are NOT counted as tool failures.
+                  worker.__runStats.toolErrorCount++;
+                  const toolName = block.tool_use_id
+                    ? worker.__runStats.toolUseIdToName.get(block.tool_use_id) || 'unknown'
+                    : 'unknown';
+                  worker.__runStats.toolErrorsByName[toolName] =
+                    (worker.__runStats.toolErrorsByName[toolName] || 0) + 1;
+                }
+              }
+            }
+          }
+
           // P2-1: record per-run usage on the terminal `result` event. Fire-and-
           // forget; applies to silent runs too (they still consume tokens).
           if (event.type === 'result') {
-            recordUsage(ws, event, outputSessionId);
+            recordUsage(ws, event, outputSessionId, worker.__runStats.runId);
             // P2 observability: record generation latency/throughput (fire-and-forget).
-            recordPerf(ws, event, outputSessionId);
+            recordPerf(ws, event, outputSessionId, worker.__runStats);
             // Conversation search increment (FR2): the turn's transcript is written by now —
             // re-index this session so the new messages become searchable within seconds.
             void enqueueMessageIndex(ws.userId, outputSessionId);
@@ -1998,6 +2209,13 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
           }
         } else if (msg.type === 'approval_request') {
           // Ask-mode HITL: relay the worker's tool-approval request to the client.
+          // T3: count and audit the request (security-relevant).
+          worker.__runStats.approvalRequestCount++;
+          recordAuditEvent(ws.cookie, 'approval.request', outputSessionId, {
+            toolUseID: msg.toolUseID,
+            toolName: msg.toolName,
+            input: redactApprovalInput(msg.input),
+          });
           if (!silentInit) {
             fanoutToSession(outputSessionId, {
               type: 'approval_request',
@@ -2075,11 +2293,13 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
           }
         } else if (msg.type === 'done') {
           worker.__terminalSent = true;
+          worker.__terminalError = false;
           if (!silentInit) {
             fanoutToSession(outputSessionId, { type: 'done', seq: msg.seq });
           }
         } else if (msg.type === 'error') {
           worker.__terminalSent = true;
+          worker.__terminalError = true;
           fanoutToSession(outputSessionId, {
             type: 'error',
             code: 'worker_error',
@@ -2099,7 +2319,12 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
 
     // Log worker stderr
     worker.stderr.on('data', (data) => {
-      console.log(`[Worker ${ws.userId}]`, data.toString().trim());
+      const chunk = data.toString();
+      console.log(`[Worker ${ws.userId}]`, chunk.trim());
+      // T1: keep a tail of stderr for env_error classification on worker_crash.
+      if (worker.__runStats) {
+        worker.__runStats.stderrTail = (worker.__runStats.stderrTail + chunk).slice(-500);
+      }
     });
 
     worker.stderr.on('error', (error) => {
@@ -2139,6 +2364,16 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
           console.log('[WS Server] Worker exited normally');
         }
 
+        // T2: determine terminal state BEFORE any fanout so run_summary is consistent.
+        let terminalState = 'done';
+        if (worker.__intentionalAbort) {
+          terminalState = 'aborted';
+        } else if (!worker.__terminalSent) {
+          terminalState = 'worker_crash';
+        } else if (worker.__terminalError) {
+          terminalState = 'error';
+        }
+
         if (isCurrent) {
           if (worker.__intentionalAbort && !silentInit) {
             // User abort: tell whoever is viewing this session that the run stopped
@@ -2163,6 +2398,12 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
             worker.__terminalSent = true;
           }
         }
+
+        // T2: one-shot run summary flush. Fire-and-forget; failures are logged only.
+        if (worker.__runStats) {
+          recordRunSummary(ws.cookie, worker.__runStats, terminalState);
+        }
+
         console.log('[WS Server] ============================================');
       } catch (closeError) {
         console.error('[WS Server] ========== ERROR IN WORKER CLOSE HANDLER ==========');
@@ -2283,12 +2524,15 @@ async function handleMessage(ws, msg) {
         });
         return;
       }
+      // T5: mark when the chat frame arrived so queued_ms can measure wait time.
+      const chatFrameReceivedAt = Date.now();
       await handleChat(ws, message.content, message.sessionId, {
         skillSlug: message.skillSlug,
         permissionTier: message.permissionTier,
         model: message.model,
         kbIds: message.kbIds,
         canvasId: message.canvasId,
+        chatFrameReceivedAt,
       });
       break;
 
@@ -2476,14 +2720,26 @@ async function handleMessage(ws, msg) {
       const approvalSessionId = message.sessionId || ws.activeRunSessionId;
       const ownsApproval = !!approvalSessionId && sessionRegistry.ownerOf(approvalSessionId) === ws.userId;
       const w = ownsApproval ? sessionRegistry.getWorker(approvalSessionId) : null;
+      const decision = message.decision === 'allow' ? 'allow' : 'deny';
       if (w && w.stdin && w.stdin.writable && message.toolUseID) {
         w.stdin.write(
           JSON.stringify({
             type: 'approval_response',
             toolUseID: message.toolUseID,
-            decision: message.decision === 'allow' ? 'allow' : 'deny',
+            decision,
           }) + '\n',
         );
+
+        // T3: audit the decision and count deny on the run that requested approval.
+        // The worker may belong to a different tab than the one sending the response.
+        recordAuditEvent(ws.cookie, 'approval.decision', approvalSessionId, {
+          toolUseID: message.toolUseID,
+          decision,
+        });
+        if (decision === 'deny' && w.__runStats) {
+          w.__runStats.approvalDenyCount++;
+          if (message.toolUseID) w.__runStats.deniedToolUseIds.add(message.toolUseID);
+        }
       }
       break;
     }

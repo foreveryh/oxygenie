@@ -23,6 +23,7 @@ const REST_API_WHITELIST = [
   // WS 服务器依赖
   '/api/agent-sessions',
   '/api/agent-sessions/by-sdk-id',
+  '/api/run-summary',
   // 第三方集成
   '/api/auth',                      // Better Auth 集成
   '/api/auth/polar',                // Polar webhook

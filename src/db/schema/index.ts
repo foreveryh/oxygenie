@@ -4,6 +4,7 @@ export * from './document.schema';
 export * from './auth.schema';
 export * from './billing.schema';
 export * from './usage-record.schema';
+export * from './run-summary.schema';
 export * from './audit-log.schema';
 export * from './project.schema';
 export * from './agent-session.schema';
