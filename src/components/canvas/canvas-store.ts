@@ -15,9 +15,16 @@ export interface PendingComposerCommand {
   text: string;
 }
 
+/** F9.1 pointer-group mode. 'text' is one-shot: canvas-toolbar.tsx arms it, the next
+ * pane click creates a text node and canvas-root.tsx flips the mode back to 'select'.
+ * 'image'/'video' stay armed (not one-shot) while direct-gen-bar.tsx's floating
+ * parameter bar is open — F9.2/9.3 — until the user submits or hits ✕. */
+export type CanvasTool = 'select' | 'hand' | 'text' | 'image' | 'video';
+
 interface CanvasState {
   assets: Record<string, CanvasAssetDTO>;
   tasks: Record<string, CanvasTask>;
+  activeTool: CanvasTool;
   // F10.1/§6.3: selection lives here as the single source of truth — xyflow's own
   // node.selected is a projection of this (set via onSelectionChange), not the other
   // way around. Full chip sync (F10.2) is a later addition; this is the foundation.
@@ -30,6 +37,11 @@ interface CanvasState {
   // the actual stage-refs+setText+send, same side-channel spirit as
   // stagePendingCanvasRefs.
   pendingComposerCommand: PendingComposerCommand | null;
+  // M3-T2: which video asset (if any) has its Trim panel open — set by node-toolbar's
+  // Trim button, read by video-node.tsx to conditionally mount trim-panel.tsx as its
+  // own child (impl spec §6.2: "面板本体挂在视频节点下方，xyflow 自定义节点的子元素").
+  trimOpenAssetId: string | null;
+  setActiveTool: (tool: CanvasTool) => void;
   setInitialAssets: (assets: CanvasAssetDTO[]) => void;
   upsertAsset: (asset: CanvasAssetDTO) => void;
   removeAssets: (assetIds: string[]) => void;
@@ -37,6 +49,7 @@ interface CanvasState {
   removeTask: (taskId: string) => void;
   setSelectedAssetIds: (ids: string[]) => void;
   setPendingComposerCommand: (command: PendingComposerCommand | null) => void;
+  setTrimOpenAssetId: (assetId: string | null) => void;
 }
 
 /**
@@ -46,8 +59,11 @@ interface CanvasState {
 export const useCanvasStore = create<CanvasState>((set) => ({
   assets: {},
   tasks: {},
+  activeTool: 'select',
   selectedAssetIds: [],
   pendingComposerCommand: null,
+  trimOpenAssetId: null,
+  setActiveTool: (tool) => set({ activeTool: tool }),
   setInitialAssets: (assets) =>
     set({ assets: Object.fromEntries(assets.map((a) => [a.id, a])) }),
   upsertAsset: (asset) =>
@@ -67,4 +83,5 @@ export const useCanvasStore = create<CanvasState>((set) => ({
     }),
   setSelectedAssetIds: (ids) => set({ selectedAssetIds: ids }),
   setPendingComposerCommand: (command) => set({ pendingComposerCommand: command }),
+  setTrimOpenAssetId: (assetId) => set({ trimOpenAssetId: assetId }),
 }));

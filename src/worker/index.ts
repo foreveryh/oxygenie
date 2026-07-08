@@ -12,6 +12,8 @@ import { runUpdateCheck } from './processors/updateCheck.ts'
 import { runPerfMaintenance } from './processors/perfMaintenance.ts'
 import { ingestDocument } from '~/server/rag/ingest'
 import { RAG_QUEUE, RAG_INGEST_JOB } from '~/server/rag/queue'
+import { CANVAS_GEN_QUEUE, CANVAS_GEN_JOB } from '~/server/canvas/generation-queue'
+import { processCanvasGenerationTask } from '~/server/canvas/generation-processor'
 
 const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
   maxRetriesPerRequest: null,
@@ -80,6 +82,28 @@ const ragWorker = new Worker(
 )
 ragWorker.on('ready', () => logger.info('[worker:rag] ready'))
 ragWorker.on('error', (err) => logger.error('[worker:rag] error', { error: err }))
+
+// Canvas direct-gen worker (M3-T1) — own queue for the same "old deployed image
+// ignores unknown queues" safety as RAG's. Concurrency 2: image/video generation calls
+// are I/O-bound (waiting on the Gemini API), not CPU-bound, so a little parallelism is
+// safe without needing per-user fairness logic (directGenerate's daily-limit check
+// already bounds how many a single user can queue).
+const canvasGenWorker = new Worker(
+  CANVAS_GEN_QUEUE,
+  async (job) => {
+    if (job.name !== CANVAS_GEN_JOB) {
+      logger.warn(`[worker:canvas-gen] Unknown job "${job.name}" - ignoring`)
+      return
+    }
+    const { taskId } = job.data as { taskId: string }
+    logger.info('[worker:canvas-gen] processing task', { taskId })
+    await processCanvasGenerationTask(taskId)
+    logger.info('[worker:canvas-gen] task finished', { taskId })
+  },
+  { connection, prefix, concurrency: 2 }
+)
+canvasGenWorker.on('ready', () => logger.info('[worker:canvas-gen] ready'))
+canvasGenWorker.on('error', (err) => logger.error('[worker:canvas-gen] error', { error: err }))
 
 // Events
 const events = new QueueEvents(queueName, { connection, prefix })

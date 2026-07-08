@@ -18,7 +18,7 @@ export function SelectionChips() {
 
   const selected = selectedAssetIds
     .map((id) => assets[id])
-    .filter((a) => a && (a.type === 'image' || a.type === 'video'));
+    .filter((a) => a && (a.type === 'image' || a.type === 'video' || a.type === 'text'));
   if (selected.length === 0) return null;
 
   return (
@@ -26,8 +26,12 @@ export function SelectionChips() {
       {selected.map((asset) => (
         <div
           key={asset.id}
-          className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-border/70 bg-muted"
-          title={asset.meta?.prompt}
+          // F9.4: text chip shows its content directly (not a thumbnail) — wider box,
+          // media chips stay the square thumbnail size.
+          className={`group relative h-14 shrink-0 overflow-hidden rounded-lg border border-border/70 bg-muted ${
+            asset.type === 'text' ? 'w-32 px-2 py-1' : 'w-14'
+          }`}
+          title={asset.type === 'text' ? asset.meta?.text?.content : asset.meta?.prompt}
         >
           {asset.relPath && asset.type === 'video' && (
             <video
@@ -45,6 +49,11 @@ export function SelectionChips() {
               alt={asset.meta?.prompt || 'selected asset'}
               className="h-full w-full object-cover"
             />
+          )}
+          {asset.type === 'text' && (
+            <p className="line-clamp-3 text-xs text-foreground">
+              {asset.meta?.text?.content || <span className="text-muted-foreground">(empty)</span>}
+            </p>
           )}
           <button
             type="button"

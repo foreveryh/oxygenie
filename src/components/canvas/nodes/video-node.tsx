@@ -4,6 +4,7 @@ import { memo, useCallback } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
 import { useServerFn } from '@tanstack/react-start';
 import { useCanvasStore } from '../canvas-store';
+import { TrimPanel } from '../trim-panel';
 import { updateAssetPos } from '~/server/function/canvas.server';
 
 export type VideoNodeData = {
@@ -40,6 +41,7 @@ function VideoNodeComponent({ id, data, selected }: NodeProps & { data: VideoNod
 
   const asset = useCanvasStore((s) => s.assets[id]);
   const upsertAsset = useCanvasStore((s) => s.upsertAsset);
+  const trimOpen = useCanvasStore((s) => s.trimOpenAssetId === id);
   const persistSize = useServerFn(updateAssetPos);
 
   const handleResize = useCallback(
@@ -84,6 +86,7 @@ function VideoNodeComponent({ id, data, selected }: NodeProps & { data: VideoNod
         />
         {!selected && <div className="absolute inset-0" />}
       </div>
+      {trimOpen && <TrimPanel assetId={id} canvasId={data.canvasId} relPath={data.relPath} width={data.width} />}
     </>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow,
   Background,
@@ -9,6 +9,7 @@ import {
   type Node,
   type OnSelectionChangeFunc,
   type OnNodeDrag,
+  type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useServerFn } from '@tanstack/react-start';
@@ -16,12 +17,15 @@ import { useCanvasStore } from './canvas-store';
 import { useCanvasChannel } from './use-canvas-channel';
 import { ImageNode, type ImageNodeData } from './nodes/image-node';
 import { VideoNode, type VideoNodeData } from './nodes/video-node';
+import { TextNode, type TextNodeData } from './nodes/text-node';
 import { PlaceholderNode, type PlaceholderNodeData } from './nodes/placeholder-node';
 import { CanvasNodeToolbar } from './nodes/node-toolbar';
-import { updateAssetPos, type CanvasAssetDTO } from '~/server/function/canvas.server';
+import { CanvasToolbar } from './canvas-toolbar';
+import { DirectGenBar } from './direct-gen-bar';
+import { updateAssetPos, createTextNode, type CanvasAssetDTO } from '~/server/function/canvas.server';
 
-const nodeTypes = { image: ImageNode, video: VideoNode, placeholder: PlaceholderNode };
-const DRAGGABLE_ASSET_TYPES = new Set(['image', 'video']);
+const nodeTypes = { image: ImageNode, video: VideoNode, text: TextNode, placeholder: PlaceholderNode };
+const DRAGGABLE_ASSET_TYPES = new Set(['image', 'video', 'text']);
 const POS_DEBOUNCE_MS = 300; // impl spec §5.6/§6.4: debounce position persistence
 
 interface CanvasRootProps {
@@ -30,8 +34,8 @@ interface CanvasRootProps {
 }
 
 /**
- * Canvas Agent (D5/M2) — ReactFlow assembly. Image + video nodes; text nodes and
- * placeholder-with-parameter-bar are still deferred (M4 polish).
+ * Canvas Agent (D5/M2/M3) — ReactFlow assembly. Image, video, and text nodes; the
+ * placeholder-with-parameter-bar (direct-gen mode) lives in direct-gen-bar.tsx (M3-T1).
  */
 export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
   const setInitialAssets = useCanvasStore((s) => s.setInitialAssets);
@@ -40,7 +44,15 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
   const selectedAssetIds = useCanvasStore((s) => s.selectedAssetIds);
   const upsertAsset = useCanvasStore((s) => s.upsertAsset);
   const setSelectedAssetIds = useCanvasStore((s) => s.setSelectedAssetIds);
+  const activeTool = useCanvasStore((s) => s.activeTool);
+  const setActiveTool = useCanvasStore((s) => s.setActiveTool);
   const persistPos = useServerFn(updateAssetPos);
+  const createTextNodeFn = useServerFn(createTextNode);
+  const rfInstance = useRef<ReactFlowInstance | null>(null);
+  // F9.4: id of the text node this component itself just created, so ITS first mount
+  // (only) opens straight into edit mode — cleared shortly after so a later remount
+  // (onlyRenderVisibleElements unmounts off-screen nodes) doesn't reopen it.
+  const [justCreatedTextId, setJustCreatedTextId] = useState<string | null>(null);
 
   useEffect(() => {
     setInitialAssets(initialAssets);
@@ -85,6 +97,23 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
     [setSelectedAssetIds]
   );
 
+  // F9.4: with the Text tool armed, clicking empty canvas drops a text node at that
+  // point (screen → flow coords via the ReactFlow instance) and switches back to
+  // Select so the tool doesn't stay "sticky" (matches the reference product).
+  const onPaneClick = useCallback(
+    (event: React.MouseEvent) => {
+      if (activeTool !== 'text' || !rfInstance.current) return;
+      const pos = rfInstance.current.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      setActiveTool('select');
+      void createTextNodeFn({ data: { canvasId, posX: pos.x, posY: pos.y, content: '' } }).then((asset) => {
+        upsertAsset(asset);
+        setJustCreatedTextId(asset.id);
+        setTimeout(() => setJustCreatedTextId(null), 150);
+      });
+    },
+    [activeTool, canvasId, createTextNodeFn, upsertAsset, setActiveTool]
+  );
+
   const nodes: Node[] = useMemo(() => {
     const assetNodes: Node[] = Object.values(assets)
       .filter((a): a is typeof a & { relPath: string } => DRAGGABLE_ASSET_TYPES.has(a.type) && !!a.relPath)
@@ -94,6 +123,14 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
               id: a.id,
               type: 'video',
               position: { x: a.posX, y: a.posY },
+              // Top-level width/height (not just inside data): xyflow's fitView/getNodesBounds
+              // only has real dimensions for a node once it's been DOM-mounted and measured
+              // (node.measured) — for a node that's still off-screen under onlyRenderVisibleElements
+              // virtualization, it falls back to these top-level fields. Without them, fitView at
+              // large asset counts (500-asset stress test) silently excludes every never-yet-mounted
+              // node from its bounds calculation instead of fitting the whole canvas.
+              width: a.width,
+              height: a.height,
               data: {
                 canvasId,
                 relPath: a.relPath,
@@ -106,10 +143,33 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
               selectable: true,
               selected: selectedAssetIds.includes(a.id),
             }
+          : a.type === 'text'
+          ? {
+              id: a.id,
+              type: 'text',
+              position: { x: a.posX, y: a.posY },
+              width: a.width,
+              height: a.height,
+              data: {
+                canvasId,
+                content: a.meta?.text?.content ?? '',
+                color: a.meta?.text?.color,
+                align: a.meta?.text?.align,
+                fontSize: a.meta?.text?.fontSize,
+                width: a.width,
+                height: a.height,
+                autoEdit: a.id === justCreatedTextId,
+              } satisfies TextNodeData,
+              draggable: true,
+              selectable: true,
+              selected: selectedAssetIds.includes(a.id),
+            }
           : {
               id: a.id,
               type: 'image',
               position: { x: a.posX, y: a.posY },
+              width: a.width,
+              height: a.height,
               data: {
                 canvasId,
                 relPath: a.relPath,
@@ -146,16 +206,27 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
       }));
 
     return [...assetNodes, ...placeholderNodes];
-  }, [assets, tasks, canvasId, selectedAssetIds]);
+  }, [assets, tasks, canvasId, selectedAssetIds, justCreatedTextId]);
+
+  // F9.1: Hand mode pans on drag (xyflow default) and disables box-selection; Select
+  // mode does the reverse (drag-on-empty-space box-selects, matching spec §6.2's
+  // "selectionOnDrag"). Text mode reuses Select's canvas interaction — its own click
+  // handling is via onPaneClick above, not a drag gesture.
+  const isHand = activeTool === 'hand';
 
   return (
-    <div className="h-full w-full">
+    <div className="relative h-full w-full">
       <ReactFlow
         nodes={nodes}
         edges={[]}
         nodeTypes={nodeTypes}
         onNodeDragStop={onNodeDragStop}
         onSelectionChange={onSelectionChange}
+        onPaneClick={onPaneClick}
+        onInit={(instance) => { rfInstance.current = instance; }}
+        panOnDrag={isHand}
+        selectionOnDrag={!isHand}
+        multiSelectionKeyCode="Shift"
         onlyRenderVisibleElements
         fitView
         proOptions={{ hideAttribution: true }}
@@ -164,6 +235,10 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
         <Controls showInteractive={false} />
         <CanvasNodeToolbar />
       </ReactFlow>
+      <div className="pointer-events-none absolute bottom-6 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2">
+        <DirectGenBar canvasId={canvasId} />
+        <CanvasToolbar canvasId={canvasId} />
+      </div>
     </div>
   );
 }

@@ -194,13 +194,14 @@ export function ChatComposer({
     const { assetIds, text } = pendingComposerCommand;
     const refs: CanvasRefDescriptor[] = assetIds
       .map((id) => canvasAssets[id])
-      .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video') && !!a.relPath)
+      .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video' || a.type === 'text') && !!a.relPath)
       .map((a) => ({
         relPath: a.relPath as string,
-        type: a.type as 'image' | 'video',
+        type: a.type as 'image' | 'video' | 'text',
         width: a.width,
         height: a.height,
         ...(a.type === 'video' && a.meta?.durationSec !== undefined ? { durationSec: a.meta.durationSec } : {}),
+        ...(a.type === 'text' ? { content: a.meta?.text?.content ?? '' } : {}),
       }));
     stagePendingCanvasRefs(refs.length > 0 ? refs : null);
     setCanvasSelectedAssetIds([]);
@@ -486,13 +487,14 @@ export function ChatComposer({
       if (canvasMode && canvasSelectedAssetIds.length > 0) {
         const refs: CanvasRefDescriptor[] = canvasSelectedAssetIds
           .map((id) => canvasAssets[id])
-          .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video') && !!a.relPath)
+          .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video' || a.type === 'text') && !!a.relPath)
           .map((a) => ({
             relPath: a.relPath as string,
-            type: a.type as 'image' | 'video',
+            type: a.type as 'image' | 'video' | 'text',
             width: a.width,
             height: a.height,
             ...(a.type === 'video' && a.meta?.durationSec !== undefined ? { durationSec: a.meta.durationSec } : {}),
+            ...(a.type === 'text' ? { content: a.meta?.text?.content ?? '' } : {}),
           }));
         stagePendingCanvasRefs(refs);
         // 发送后清空选中 (impl spec §6.3, matches the reference product's behavior).

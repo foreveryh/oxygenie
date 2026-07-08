@@ -315,13 +315,17 @@ function classifyAttachment(attachment: AttachmentDescriptor): AttachmentHint {
   };
 }
 
-/** Canvas Agent (D5/F10) — a selected canvas asset, referenced in the outgoing prompt. */
+/** Canvas Agent (D5/F10) — a selected canvas asset, referenced in the outgoing prompt.
+ * F9.4: text nodes carry `content` inline (cheap, unlike media) so the Agent has the
+ * note's text without a round-trip `cat notes/{id}.md` — matches the reference
+ * product's observed behavior (select text node → ask about it → Agent recites it). */
 export type CanvasRefDescriptor = {
   relPath: string;
-  type: 'image' | 'video';
+  type: 'image' | 'video' | 'text';
   width?: number;
   height?: number;
   durationSec?: number;
+  content?: string;
 };
 
 function extractRunConfigCanvasRefs(runConfig?: ChatModelRunOptions['runConfig']): CanvasRefDescriptor[] {
@@ -335,7 +339,7 @@ function extractRunConfigCanvasRefs(runConfig?: ChatModelRunOptions['runConfig']
       if (!item || typeof item !== 'object') return null;
       const candidate = item as Partial<CanvasRefDescriptor>;
       if (typeof candidate.relPath !== 'string' || !candidate.relPath.trim()) return null;
-      if (candidate.type !== 'image' && candidate.type !== 'video') return null;
+      if (candidate.type !== 'image' && candidate.type !== 'video' && candidate.type !== 'text') return null;
       // Omit (not just `undefined`-set) keys so the inferred literal type actually
       // matches CanvasRefDescriptor's optional fields for the type predicate below.
       return {
@@ -344,6 +348,7 @@ function extractRunConfigCanvasRefs(runConfig?: ChatModelRunOptions['runConfig']
         ...(typeof candidate.width === 'number' ? { width: candidate.width } : {}),
         ...(typeof candidate.height === 'number' ? { height: candidate.height } : {}),
         ...(typeof candidate.durationSec === 'number' ? { durationSec: candidate.durationSec } : {}),
+        ...(typeof candidate.content === 'string' ? { content: candidate.content } : {}),
       };
     })
     .filter((item): item is CanvasRefDescriptor => Boolean(item));
@@ -358,6 +363,10 @@ function buildCanvasRefsBlock(refs: CanvasRefDescriptor[]): string {
   if (refs.length === 0) return '';
   const lines: string[] = ['【画布引用】'];
   refs.forEach((ref, index) => {
+    if (ref.type === 'text') {
+      lines.push(`${index + 1}. ${ref.relPath} (text): ${ref.content ?? ''}`);
+      return;
+    }
     const dims = ref.type === 'image'
       ? (ref.width && ref.height ? ` ${ref.width}x${ref.height}` : '')
       : [

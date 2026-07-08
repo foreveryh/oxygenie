@@ -10,11 +10,11 @@
  */
 
 import { createFileRoute } from '@tanstack/react-router';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '~/db/db-config';
-import { canvasWorkspace, canvasAsset, generationTask } from '~/db/schema';
+import { canvasWorkspace } from '~/db/schema';
 import { requireUser } from '~/server/require-user';
-import { assignSlots, slotOf, originOf, type Pos } from '~/server/canvas/slot-layout';
+import { createGenerationTask } from '~/server/canvas/task-orchestration';
 
 export const Route = createFileRoute('/api/internal/canvas/tasks')({
   server: {
@@ -41,44 +41,18 @@ export const Route = createFileRoute('/api/internal/canvas/tasks')({
           return Response.json({ error: 'forbidden' }, { status: 403 });
         }
 
-        const count = Math.max(1, params?.count ?? 1);
+        // Slot reservation is not wrapped in a transaction/row lock — a v1-acceptable
+        // race (worst case: two tasks land visually adjacent-but-overlapping; the
+        // spec's own "reconcile, don't block" philosophy applies here too).
+        const { task, reservedPositions } = await createGenerationTask({
+          canvasId,
+          sessionId,
+          origin: 'agent',
+          kind,
+          params,
+        });
 
-        // Existing occupied positions: ready/generating assets + slots already reserved
-        // by other running tasks (so two concurrent generations don't pick the same
-        // spot). Not wrapped in a transaction/row lock — a v1-acceptable race (worst
-        // case: two tasks land visually adjacent-but-overlapping; the spec's own
-        // "reconcile, don't block" philosophy applies here too).
-        const existingAssets = await db
-          .select({ posX: canvasAsset.posX, posY: canvasAsset.posY })
-          .from(canvasAsset)
-          .where(and(eq(canvasAsset.canvasId, canvasId), isNull(canvasAsset.deletedAt)));
-        const runningTasks = await db
-          .select({ reservedSlots: generationTask.reservedSlots })
-          .from(generationTask)
-          .where(and(eq(generationTask.canvasId, canvasId), eq(generationTask.status, 'running')));
-
-        const reservedFromRunning: Pos[] = runningTasks.flatMap((t) =>
-          (t.reservedSlots || []).map((idx) => originOf(idx))
-        );
-        const occupied: Pos[] = [...existingAssets, ...reservedFromRunning];
-
-        const slots = assignSlots(count, occupied);
-        const reservedSlotIndices = slots.map((s) => slotOf(s));
-
-        const [task] = await db
-          .insert(generationTask)
-          .values({
-            canvasId,
-            sessionId: sessionId || null,
-            origin: 'agent',
-            kind,
-            params: params || {},
-            reservedSlots: reservedSlotIndices,
-            status: 'running',
-          })
-          .returning();
-
-        return Response.json({ ...task, reservedPositions: slots });
+        return Response.json({ ...task, reservedPositions });
       },
     },
   },
