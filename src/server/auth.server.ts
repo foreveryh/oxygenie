@@ -98,6 +98,26 @@ const checkoutProducts = isPolarEnabled
     ].filter(Boolean) as Array<{ productId: string; slug: string }>)
   : [];
 
+async function promoteFirstUserToSystemAdmin(createdUser: { id: string; email?: string | null }) {
+  try {
+    const { user: userTable } = await import('~/db/schema');
+    const users = await db.select({ count: sql<number>`count(*)::int` })
+      .from(userTable);
+
+    const userCount = users[0]?.count || 0;
+
+    if (userCount === 1) {
+      await db.update(userTable)
+        .set({ systemRole: 'admin' })
+        .where(eq(userTable.id, createdUser.id));
+      console.log('[auth] First user registered, set as system admin:', createdUser.email);
+    }
+  } catch (error) {
+    console.error('[auth] Failed to set first user as admin:', error);
+    // Don't throw - let registration succeed.
+  }
+}
+
 export const auth = betterAuth({
   baseURL: authBaseURL,
   basePath: authBasePath,
@@ -120,34 +140,16 @@ export const auth = betterAuth({
         }
       },
     },
-    // Add hook to set first user as system admin
-    onCreate: async (user) => {
-      try {
-        // Check if this is the first user in the system
-        const { user: userTable } = await import('~/db/schema');
-        const users = await db.select({ count: sql<number>`count(*)::int` })
-          .from(userTable);
-
-        const userCount = users[0]?.count || 0;
-
-        // If this is the first user (count is 1 because the user was just created),
-        // set them as system admin
-        if (userCount === 1) {
-          await db.update(userTable)
-            .set({ systemRole: 'admin' })
-            .where(eq(userTable.id, user.id));
-          console.log('[auth] First user registered, set as system admin:', user.email);
-        }
-      } catch (error) {
-        console.error('[auth] Failed to set first user as admin:', error);
-        // Don't throw - let registration succeed
-      }
-    },
   },
   // P2-2: audit logins. A new session row == a successful sign-in. recordAudit
   // swallows its own errors, and we additionally guard here so auditing can
   // never break authentication.
   databaseHooks: {
+    user: {
+      create: {
+        after: promoteFirstUserToSystemAdmin,
+      },
+    },
     session: {
       create: {
         // `session` is contextually typed by better-auth (Session & Record<…>);

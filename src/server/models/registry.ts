@@ -146,6 +146,14 @@ export async function seedModelsFromEnv(): Promise<{ connections: number; models
     await db.insert(modelHealth).values({ modelId: m.id, health: 'unknown' }).onConflictDoNothing();
   }
 
+  try {
+    const { systemQueue } = await import('~/jobs/queues');
+    await systemQueue.add('probe-models', {}, { jobId: `probe-seed-${Date.now()}` });
+    console.log('[Models] Queued health probe for freshly-seeded models.');
+  } catch (error) {
+    console.warn('[Models] Failed to queue health probe after seed:', error);
+  }
+
   console.log(`[Models] Seed: ${seed.connections.length} connections, ${seed.models.length} models (idempotent).`);
   return { connections: seed.connections.length, models: seed.models.length };
 }

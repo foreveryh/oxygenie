@@ -7,7 +7,7 @@ import {
 import { AppSidebar } from '~/components/app-sidebar';
 import { SiteHeader } from '~/components/site-header';
 import { SidebarInset, SidebarProvider } from '~/components/ui/sidebar';
-import { getSession } from '~/server/function/auth.server.func';
+import { getEmailVerificationConfig, getSession } from '~/server/function/auth.server.func';
 import { EmailVerificationBanner } from '~/components/email-verification-banner';
 
 export const Route = createFileRoute('/agents')({
@@ -26,7 +26,10 @@ export const Route = createFileRoute('/agents')({
     // Safely handle search params
     const searchParams = location.search || {};
 
-    const session = await getSession();
+    const [session, emailVerificationConfig] = await Promise.all([
+      getSession(),
+      getEmailVerificationConfig(),
+    ]);
 
     if (shouldLog) {
       console.log('[Route /agents] getSession result:', {
@@ -71,13 +74,16 @@ export const Route = createFileRoute('/agents')({
       console.log('[Route /agents] Returning user context:', { user });
     }
 
-    return { user };
+    return {
+      user,
+      emailVerificationEnabled: emailVerificationConfig.enabled,
+    };
   },
   component: RouteComponent,
 });
 
 function RouteComponent() {
-  const { user } = Route.useRouteContext();
+  const { user, emailVerificationEnabled } = Route.useRouteContext();
   // open={false} 受控锁定主侧边栏为常驻图标条（IA redesign §3：主条不折叠，只 hover 提示）。
   return (
     <SidebarProvider open={false}>
@@ -85,7 +91,7 @@ function RouteComponent() {
       <SidebarInset>
         <SiteHeader />
         <div className="flex flex-1 flex-col min-h-0">
-          {!user.emailVerified ? (
+          {emailVerificationEnabled && !user.emailVerified ? (
             <EmailVerificationBanner email={user.email} />
           ) : null}
           <div className="@container/main flex flex-1 flex-col min-h-0 gap-2">

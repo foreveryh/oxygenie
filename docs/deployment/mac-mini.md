@@ -66,6 +66,11 @@ cd kin
 
 Confirm Docker is up: `docker version` should print both Client and Server.
 
+**Fast path:** create the Cloudflare Tunnel token in the dashboard (Step 3a below), then run
+`bash scripts/install-tunnel.sh` and skip the manual env/config/compose commands below. The
+script generates `~/kin-deploy/secrets.env`, writes the tunnel config, starts the stack, and
+prints the DNS records.
+
 ---
 
 ## Step 2 · Create your secrets (outside the repo)
@@ -78,7 +83,11 @@ cat > ~/kin-deploy/secrets.env <<'EOF'
 # --- identity / domain ---
 APP_HOSTNAME=kin.example.com
 APP_NAME=kin
-APP_NAME_SANITIZED=kin-mini        # must be UNIQUE across stacks on this host (volume names)
+# Must be UNIQUE across stacks on this host; volume names derive from it.
+APP_NAME_SANITIZED=kin-mini
+APP_IMAGE=ghcr.io/deeptoai-com/kin/app
+APP_TAG=latest
+APP_PULL_POLICY=always
 
 # --- datastore + auth secrets (generated below) ---
 POSTGRES_USER=kin
@@ -86,8 +95,16 @@ POSTGRES_PASSWORD=__FILL__
 POSTGRES_DB=kin
 MINIO_ROOT_USER=kin
 MINIO_ROOT_PASSWORD=__FILL__
+MINIO_BUCKET=kin-files
 MEILI_MASTER_KEY=__FILL__
 BETTER_AUTH_SECRET=__FILL__
+JOBS_SECRET=__FILL__
+KIN_SECRET_KEY=__FILL__
+
+# --- online auto-update ---
+UPDATER_TOKEN=__FILL__
+UPDATER_PROD_ENV_DIR=/Users/YOU/kin-deploy
+UPDATER_COMPOSE_ENV_FILE=/run/updater/envd/secrets.env
 
 # --- LLM gateway (ARK / Volcengine) — Bearer auth; do NOT set ANTHROPIC_API_KEY ---
 ANTHROPIC_AUTH_TOKEN=ark-your-key-here
@@ -97,19 +114,22 @@ ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.1
 ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.1
 ANTHROPIC_DEFAULT_HAIKU_MODEL=doubao-seed-2.0-lite
 CLAUDE_CODE_SUBAGENT_MODEL=glm-5.1
+OXY_MODELS_SEED='{"default":"default/glm-5.1","connections":[{"id":"default","label":"Default","baseUrl":"https://ark.cn-beijing.volces.com/api/coding","authStyle":"bearer","tokenEnv":"ANTHROPIC_AUTH_TOKEN"}],"models":[{"id":"default/glm-5.1","label":"glm-5.1","connection":"default","model":"glm-5.1","enabled":true,"isDefault":true,"tags":["chat"]}]}'
+ENABLE_EMAIL_VERIFICATION=false
 EOF
 chmod 600 ~/kin-deploy/secrets.env
 
-# fill the four generated secrets in place:
-for k in POSTGRES_PASSWORD MINIO_ROOT_PASSWORD MEILI_MASTER_KEY BETTER_AUTH_SECRET; do
+# fill the generated secrets in place:
+for k in POSTGRES_PASSWORD MINIO_ROOT_PASSWORD MEILI_MASTER_KEY BETTER_AUTH_SECRET JOBS_SECRET KIN_SECRET_KEY UPDATER_TOKEN; do
   v=$(openssl rand -hex 32)
   sed -i '' "s|^$k=__FILL__|$k=$v|" ~/kin-deploy/secrets.env
 done
 ```
 
 Then edit `~/kin-deploy/secrets.env` and set your real `ANTHROPIC_AUTH_TOKEN` (and
-`APP_HOSTNAME` if not `kin.example.com`). Keep `APP_NAME_SANITIZED` unique — volume names derive
-from it, and a collision would reuse another stack's data.
+`APP_HOSTNAME` if not `kin.example.com`). Replace `/Users/YOU/kin-deploy` with your real home
+path. Keep `APP_NAME_SANITIZED` unique — volume names derive from it, and a collision would reuse
+another stack's data.
 
 > ARK uses **`ANTHROPIC_AUTH_TOKEN`** (Bearer). Setting `ANTHROPIC_API_KEY` makes the SDK
 > switch to `x-api-key` and ARK rejects it — so leave it unset.
@@ -126,14 +146,28 @@ ingress is defined in `config.yml` below so the wildcard works.
 ### 3b. Generate credentials + tunnel config
 ```bash
 cd ~/kin/infra/tunnel        # adjust if you cloned elsewhere
-cp config.yml.example config.yml
 TOKEN='eyJ...'                    # paste your tunnel token
-TID=$(echo "$TOKEN" | base64 -d \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);open("credentials.json","w").write(json.dumps({"AccountTag":d["a"],"TunnelID":d["t"],"TunnelSecret":d["s"]}));print(d["t"])')
-sed -i '' "s/REPLACE_WITH_TUNNEL_ID/$TID/" config.yml
+APP_HOSTNAME=kin.example.com
+TID=$(python3 - "$TOKEN" "$APP_HOSTNAME" <<'PY'
+import base64, json, pathlib, sys
+token, host = sys.argv[1:3]
+token += "=" * ((4 - len(token) % 4) % 4)
+d = json.loads(base64.urlsafe_b64decode(token.encode()))
+pathlib.Path("credentials.json").write_text(json.dumps({"AccountTag":d["a"],"TunnelID":d["t"],"TunnelSecret":d["s"]}) + "\n")
+pathlib.Path("config.yml").write_text(f"""tunnel: {d['t']}
+credentials-file: /etc/cloudflared/credentials.json
+ingress:
+  - hostname: {host}
+    service: http://traefik:80
+  - hostname: "*.{host}"
+    service: http://traefik:80
+  - service: http_status:404
+""")
+print(d["t"])
+PY
+)
 echo "Tunnel ID: $TID"            # you need this for DNS next
 ```
-If your domain isn't `kin.example.com`, also edit the two `hostname:` lines in `config.yml`.
 (`config.yml` and `credentials.json` are **gitignored** — per-deploy / secret.)
 
 ### 3c. DNS — two **proxied** CNAMEs
@@ -141,11 +175,13 @@ In Cloudflare DNS for your zone, add (replace `<TID>`):
 
 | Type | Name | Target | Proxy |
 |---|---|---|---|
-| CNAME | `kin.example.com` (`@`) | `<TID>.cfargotunnel.com` | **Proxied** (orange) |
-| CNAME | `*` | `<TID>.cfargotunnel.com` | **Proxied** (orange) |
+| CNAME | `APP_HOSTNAME` | `<TID>.cfargotunnel.com` | **Proxied** (orange) |
+| CNAME | `*.APP_HOSTNAME` | `<TID>.cfargotunnel.com` | **Proxied** (orange) |
 
-The apex serves the app; `*` serves every `<id>.kin.example.com` preview. Cloudflare's free
-Universal SSL covers the apex + one wildcard level (so previews are single-level by design).
+For the lowest-friction free Universal SSL path, make `APP_HOSTNAME` your Cloudflare zone apex,
+for example `example.com`; previews are then `<id>.example.com`. If you prefer
+`kin.example.com`, previews become `<id>.kin.example.com` and need Total TLS, an Advanced
+Certificate for `*.kin.example.com`, or a custom edge certificate.
 
 ---
 
@@ -172,8 +208,7 @@ kin-local.tar.gz | docker load`), but pulling the multi-arch image avoids all of
 
 ```bash
 cd ~/kin
-set -a; . ~/kin-deploy/secrets.env; set +a
-docker compose -f docker-compose.tunnel.yml -p kin up -d    # pulls ghcr.io/deeptoai-com/kin/* (arm64)
+docker compose --env-file ~/kin-deploy/secrets.env -f docker-compose.tunnel.yml -p kin up -d
 ```
 
 > Running your own local build instead? Add the overlay + image env:
@@ -208,7 +243,7 @@ docker exec ${APP_NAME_SANITIZED}-dockerproxy sh -c \
 docker exec kin-app sh -c 'unshare -Urn echo userns-ok'   # → userns-ok
 ```
 
-Then open **`https://kin.example.com`** in a browser (DNS from Step 3 must be live). You should
+Then open `https://$APP_HOSTNAME` in a browser (DNS from Step 3 must be live). You should
 get the app over HTTPS (Cloudflare terminates TLS at the edge).
 
 ---
@@ -229,9 +264,10 @@ bash infra/preview/warm-cache.sh
 
 ## Step 8 · First sign-in
 
-Open `https://kin.example.com`, create your account. Kin is a **single-org, multi-user**
-workspace for a trusted team — the first user is you; invite teammates as needed. You may see
-a "verify your email" banner; email verification is optional for core use on a self-host.
+Open `https://$APP_HOSTNAME`, create your account. Kin is a **single-org, multi-user**
+workspace for a trusted team — the first user is you; invite teammates as needed. The installer
+sets `ENABLE_EMAIL_VERIFICATION=false`, so first run is not blocked by an email round-trip. If you
+turn verification on later, configure and test SMTP/Resend first.
 
 Try it end to end: ask for a small multi-file web app → click **运行预览 / Run preview** → it
 builds in a sandbox and loads at `https://<id>.kin.example.com`. Run a snippet of Python to
@@ -302,7 +338,8 @@ The most common first-deploy snags:
 |---|---|
 | Build killed / "out of memory" on an 8 GB mini | You don't need to build — pull the prebuilt multi-arch image (Step 4 default). A local build needs >8 GB; do it on a 16 GB+ Mac. |
 | Site unreachable, but `docker ps` is healthy | The mini slept or lost network. See "Keep the mini awake". |
-| `https://kin.example.com` shows Cloudflare error 1033/530 | Tunnel not connected — check `cloudflared` logs (Step 6) and that DNS CNAMEs point to `<TID>.cfargotunnel.com`, **proxied**. |
+| `https://$APP_HOSTNAME` shows Cloudflare error 1033/530 | Tunnel not connected — check `cloudflared` logs (Step 6) and that DNS CNAMEs point to `<TID>.cfargotunnel.com`, **proxied**. |
+| Preview subdomain has a TLS certificate error | Cloudflare Universal SSL on a full zone only covers the apex and first-level subdomains. Use the zone apex as `APP_HOSTNAME`, or enable Total TLS / Advanced Certificate for `*.APP_HOSTNAME`. |
 | Preview opens but 404s | Ensure you're on this branch's code (Traefik v3 `HostRegexp` fix). |
 | Chat says auth/model error | ARK key/model: `ANTHROPIC_AUTH_TOKEN` set, `ANTHROPIC_API_KEY` **unset**. |
 

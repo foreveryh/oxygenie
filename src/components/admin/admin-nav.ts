@@ -1,7 +1,6 @@
 import type { ComponentType, SVGProps } from 'react';
 import RiDashboardLine from '~icons/ri/dashboard-line';
 import RiUserSettingsLine from '~icons/ri/user-settings-line';
-import RiFileEditLine from '~icons/ri/file-edit-line';
 import RiListSettingsLine from '~icons/ri/list-settings-line';
 import RiRobot2Line from '~icons/ri/robot-2-line';
 import RiLineChartLine from '~icons/ri/line-chart-line';
@@ -21,7 +20,6 @@ export type AdminSection =
   | 'models'
   | 'variables'
   | 'skills'
-  | 'a2composer'
   | 'health'
   | 'performance'
   | 'updates'
@@ -115,13 +113,6 @@ export const adminNavGroups: AdminNavGroup[] = [
         description: 'Skill governance',
         icon: RiListSettingsLine,
         path: '/admin/skills',
-      },
-      {
-        section: 'a2composer',
-        label: 'A2Composer',
-        description: 'Composer skill presentation',
-        icon: RiFileEditLine,
-        path: '/admin/a2composer',
       },
     ],
   },

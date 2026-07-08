@@ -66,3 +66,9 @@ export const getSession = createServerFn({ method: "GET" }).handler(
 		}
 	},
 );
+
+export const getEmailVerificationConfig = createServerFn({ method: "GET" }).handler(
+	async () => ({
+		enabled: process.env.ENABLE_EMAIL_VERIFICATION === 'true',
+	}),
+);
