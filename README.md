@@ -16,6 +16,24 @@ shared workspace. It is **not** an anonymous public multi-tenant SaaS — securi
 defence-in-depth (org-internal user isolation, sandboxing, misuse guards), not a lockdown
 against the open internet.
 
+## Product positioning
+
+Kin is the **self-hostable team AI workspace** for sensitive small teams: law firms,
+research labs, funds, family offices, studios, and internal teams that want an agent to
+work with files, code, documents, previews, and tools without moving the whole workspace
+into a vendor SaaS.
+
+| Kin is for | Kin is not |
+|------------|------------|
+| Trusted teams running one private workspace on their own host | A public multi-tenant chat SaaS |
+| Agent work: files, code execution, artifacts, previews, Skills, MCP, RAG | A workflow-builder platform where users must assemble every bot first |
+| Provider-neutral model routing through your chosen API endpoint | An air-gapped local-model appliance by default |
+| Small teams that care about data ownership, auditability, and deployability | Anonymous internet users or zero-trust hostile tenants |
+
+**Data boundary:** your documents, knowledge base, conversations, audit logs, users, and
+runtime state stay on your infrastructure. Model calls send the current inference context
+only to the endpoint you configure.
+
 ## Highlights
 
 - 🧰 **Skills & MCP** — one-click enable/disable of curated skills and MCP servers; toggles take effect on the next new conversation (the current SDK session does not hot-reload them).
@@ -43,11 +61,37 @@ against the open internet.
 - 📦 **One-command install** — prebuilt **multi-arch (amd64 + arm64)** images on GHCR; a
   fresh VPS goes from zero to a running, TLS-terminated stack with one script.
 
+## Demo media placeholders
+
+> Launch TODO: replace this section with real images/video before a public GTM push. Detailed
+> capture instructions live in **[docs/gtm/media-checklist.md](docs/gtm/media-checklist.md)**.
+
+| Slot | Put final asset at | Capture exactly |
+|------|--------------------|-----------------|
+| Hero GIF / short silent loop | `docs/gtm/media/kin-hero-agent-preview.gif` | `/agents/c`: ask Kin to build a small multi-file web app, show tool calls, generated files, and **运行预览 / Run preview** reaching a live preview URL. |
+| Core screenshot 1 | `docs/gtm/media/01-agent-workspace.png` | `/agents/c`: left conversation with tool-call timeline, right workbench/files, preview-ready state visible. |
+| Core screenshot 2 | `docs/gtm/media/02-admin-models.png` | `/admin/models`: healthy model row, default model slots, and the API-key paste/test flow visible. Mask any real key. |
+| Core screenshot 3 | `docs/gtm/media/03-canvas-workspace.png` | `/agents/canvas/<canvasId>`: chat + canvas side-by-side with text/image/video nodes and the bottom direct-generation toolbar visible. |
+| Core screenshot 4 | `docs/gtm/media/04-online-update.png` | `/admin/updates` or the sidebar update prompt: current build, latest build, and update status visible. |
+| 90s product video | Link to YouTube/Loom or `docs/gtm/media/kin-product-demo.mp4` | Start with the private-team workspace promise, then show model setup, an agent run, live preview, admin update, and deployment paths. |
+| 5 min install video | Link to YouTube/Loom or `docs/gtm/media/kin-vps-install.mp4` | Fresh VPS install: Cloudflare DNS/token prerequisites, `install-vps.sh`, first admin registration, model health test, first preview. |
+
 ## Quick start
 
 > Kin ships **prebuilt multi-arch images** to GHCR
 > (`ghcr.io/deeptoai-com/kin/{app,parser,updater}`), so you don't build the heavy app
 > locally — the installer just pulls them.
+
+### Choose your deployment path
+
+| Path | Best for | Needs |
+|------|----------|-------|
+| **A. VPS install** | Production baseline on a Linux host with public inbound traffic | Ubuntu/Debian VPS, ports 80/443, a Cloudflare-managed domain, `A` records for the app host and wildcard previews, model gateway key |
+| **B. Tunnel install** | Mac mini, workstation, home server, or any host behind NAT | Docker/OrbStack, a Cloudflare Tunnel token, two proxied CNAME records, model gateway key |
+| **C. Local development** | Contributors changing code | Node 22+, pnpm, Docker Compose |
+
+For launch videos and docs, Path A is the cleanest "fresh server to production" story.
+Path B is the best "private AI box on a Mac mini / workstation" story.
 
 ### Option A — One-command VPS install (public-IP host) ⭐
 
@@ -97,6 +141,19 @@ git clone https://github.com/deeptoai-com/kin.git && cd kin
 pnpm install
 scripts/local-prod.sh --build                # builds + serves on http://127.0.0.1:3100
 ```
+
+## First-run smoke test
+
+After any production install, run this once before inviting a team:
+
+1. Open `https://<your-domain>` and register the first account. It becomes the system admin.
+2. Open `/admin/models`, confirm a default model exists, paste/test the API key if needed,
+   and wait for model health to show healthy.
+3. Open `/agents/c`, select the healthy model, and send a tiny prompt.
+4. Ask Kin to create a small multi-file web app, then click **运行预览 / Run preview** and
+   confirm it opens at `https://<preview-id>.<your-domain>/`.
+5. Open `/admin/updates` and confirm the updater can check the current image status.
+6. Invite a second user only after the model, preview, and update checks are green.
 
 ## Online auto-update
 
@@ -226,6 +283,7 @@ pnpm test
 - **[Overview](docs/deployment/overview.md)** — paths, images, online auto-update
 - **[VPS (public IP)](scripts/install-vps.sh)** — one-command installer
 - **[Tunnel (Mac / NAT)](docs/deployment/tunnel.md)** — Cloudflare Tunnel
+- **[Mac mini from scratch](docs/deployment/mac-mini.md)** — linear Path B guide for Apple Silicon
 - **[Sizing](docs/deployment/sizing.md)** — host sizing & concurrency
 
 ## License
