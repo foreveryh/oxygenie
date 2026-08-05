@@ -1,21 +1,18 @@
-# OxyGenie — Path C: Cloudflare Tunnel (workstation / home server / behind NAT).
+# Kin — Path B: Cloudflare Tunnel (workstation / home server / behind NAT).
 #
 # Full guide: docs/deployment/tunnel.md · configs: infra/tunnel/
 #
 # This is "Path A + a tunnel": the same app/images plus a bundled Traefik (reads container
 # labels), a `cloudflared` container that opens an OUTBOUND tunnel to Cloudflare (no public
-# IP / no open ports needed), and — on macOS only — a tiny `dockerproxy` nginx shim that
-# rewrites the docker API version Traefik pins (OrbStack/Docker Desktop reject v1.24).
+# IP / no open ports needed), and a tiny `dockerproxy` nginx shim that rewrites the docker
+# API version Traefik pins. It is required on OrbStack/Docker Desktop and Docker 28/29+.
 # Cloudflare terminates TLS at the edge; the tunnel→Traefik hop is plain HTTP.
 #
-# Bring up (image built natively on the host as oxygenie:local):
-#   docker build -t oxygenie:local .
-#   set -a; . ~/oxygenie-deploy/secrets.env; set +a
-#   export APP_IMAGE=oxygenie APP_TAG=local
-#   docker compose -f docker-compose.tunnel.yml up -d
+# Easiest bring-up:
+#   bash scripts/install-tunnel.sh
 #
-# On a plain Linux host you can delete `dockerproxy` and point Traefik at the socket
-# directly (see docs/deployment/tunnel.md → "Running on a plain Linux host").
+# Only old Linux Docker (<=27) can delete `dockerproxy` and point Traefik at the socket
+# directly. Keep the default on modern Docker.
 
 # Image is built OFF-SERVER by CI (.github/workflows/build.yml, on push to main) and
 # pushed to GHCR; Dokploy only PULLS it. Building this heavy app on the Dokploy host
@@ -317,6 +314,7 @@ services:
       BETTER_AUTH_URL: https://${APP_HOSTNAME}
       BETTER_AUTH_INTERNAL_URL: http://localhost:5000
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?}
+      ENABLE_EMAIL_VERIFICATION: ${ENABLE_EMAIL_VERIFICATION:-false}
       # OAuth Providers (optional - GitHub & Google)
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
@@ -547,9 +545,8 @@ services:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=oxygenie-net"
-      # Talk to the docker API through the version-rewriting nginx proxy (OrbStack/
-      # Docker Desktop reject Traefik's pinned API v1.24). On a plain Linux host you can
-      # drop dockerproxy and use the socket directly via a volume mount instead.
+      # Talk to the docker API through the version-rewriting nginx proxy. Traefik's docker
+      # provider pins API v1.24; Docker 28/29+ rejects that on any OS.
       - "--providers.docker.endpoint=tcp://dockerproxy:2375"
       - "--entrypoints.web.address=:80"
     depends_on:

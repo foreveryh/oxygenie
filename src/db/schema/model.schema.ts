@@ -52,6 +52,14 @@ export const modelProtocolEnum = pgEnum('model_protocol', [
 // RAG (embedding).
 export const MODEL_CAPABILITIES = ['chat', 'vision', 'image', 'video', 'embedding'] as const;
 export type ModelCapability = (typeof MODEL_CAPABILITIES)[number];
+export type ModelMediaConfigValue =
+  | string
+  | number
+  | boolean
+  | null
+  | ModelMediaConfigValue[]
+  | { [key: string]: ModelMediaConfigValue };
+export type ModelMediaConfig = Record<string, ModelMediaConfigValue>;
 
 // ── model_connection ─ an Anthropic-compatible endpoint + one credential (an account)
 export const modelConnection = pgTable('model_connection', {
@@ -96,6 +104,13 @@ export const modelDefinition = pgTable('model_definition', {
   model: text('model').notNull(),
   // v2: what this model can do (see MODEL_CAPABILITIES). Legacy rows default to chat.
   capabilities: jsonb('capabilities').$type<ModelCapability[]>().default(['chat']).notNull(),
+  // Provider-specific media execution driver. Kept separate from connection.protocol:
+  // one Gemini connection can host both Imagen and Veo, whose REST/LRO shapes differ.
+  // Null means legacy inference (gemini image→google-imagen, video→google-veo).
+  mediaAdapter: text('media_adapter'),
+  // Adapter-owned defaults/feature flags. The canvas contract stays stable while a
+  // new provider can consume additional options without adding schema columns.
+  mediaConfig: jsonb('media_config').$type<ModelMediaConfig>().default({}).notNull(),
   tags: jsonb('tags').$type<string[]>().default([]).notNull(),
   enabled: boolean('enabled').notNull().default(true),
   isDefault: boolean('is_default').notNull().default(false),

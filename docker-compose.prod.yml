@@ -182,6 +182,9 @@ services:
       MEILI_API_KEY: ${MEILI_API_KEY:-${MEILI_MASTER_KEY}}
       SEARCH_REINDEX_ON_BOOT: ${SEARCH_REINDEX_ON_BOOT:-false}
       MESSAGE_REINDEX_ON_BOOT: ${MESSAGE_REINDEX_ON_BOOT:-false}
+      # Registry v2 credential sealing. Must match app so sealed admin credentials
+      # can be opened by background jobs that need model/global-variable secrets.
+      KIN_SECRET_KEY: ${KIN_SECRET_KEY:-}
       # RAG ingest (parser + embeddings); only active when RAG_ENABLED=true. Mirrors tunnel.yml.
       RAG_ENABLED: ${RAG_ENABLED:-}
       PARSER_SIDECAR_URL: ${PARSER_SIDECAR_URL:-http://parser:7800}
@@ -251,6 +254,7 @@ services:
       BETTER_AUTH_URL: https://${APP_HOSTNAME}
       BETTER_AUTH_INTERNAL_URL: http://localhost:5000
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?}
+      ENABLE_EMAIL_VERIFICATION: ${ENABLE_EMAIL_VERIFICATION:-false}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
@@ -259,6 +263,7 @@ services:
       VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
       # Optional: Zhipu key — only for the GLM image tool + Zhipu MCP servers (unset if unused)
       ZHIPU_API_KEY: ${ZHIPU_API_KEY:-}
+      KIN_SECRET_KEY: ${KIN_SECRET_KEY:-}
       # Claude Agent SDK — ARK uses Bearer (ANTHROPIC_AUTH_TOKEN); do NOT set ANTHROPIC_API_KEY.
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:?}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -268,6 +273,8 @@ services:
       ANTHROPIC_DEFAULT_OPUS_MODEL: ${ANTHROPIC_DEFAULT_OPUS_MODEL:-}
       ANTHROPIC_DEFAULT_HAIKU_MODEL: ${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}
       CLAUDE_CODE_SUBAGENT_MODEL: ${CLAUDE_CODE_SUBAGENT_MODEL:-}
+      # Multi-model registry v2 seed. Non-secret JSON; secrets stay in env by tokenEnv name.
+      OXY_MODELS_SEED: ${OXY_MODELS_SEED:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       CLAUDE_SESSIONS_ROOT: /data/users
       APP_URL: http://localhost:5000
@@ -441,6 +448,10 @@ services:
       - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
       - "--certificatesresolvers.le.acme.dnschallenge=true"
       - "--certificatesresolvers.le.acme.dnschallenge.provider=cloudflare"
+      # Do not rely on Docker/systemd-resolved for SOA lookups during DNS-01. Some hosts answer
+      # A records fine but time out on SOA, which makes lego fail zone discovery before it can
+      # create the TXT challenge.
+      - "--certificatesresolvers.le.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53"
       # File provider for the ALTERNATIVE (Cloudflare Origin CA): drop a *.yml + cert into
       # infra/prod/dynamic/ and the routers serve it as the default cert (see the guide).
       - "--providers.file.directory=/etc/traefik/dynamic"

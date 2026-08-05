@@ -21,7 +21,10 @@ export default ({ mode }: ConfigEnv) => {
     ssr: {
       // Externalize pg and @mastra/pg to avoid ESM/CJS interop TDZ errors
       // The 'pg' package is CommonJS, and bundling it causes "Cannot access 'pg' before initialization"
-      external: ['pg', '@mastra/pg', 'playwright'],
+      // sharp: native .node binary (canvas asset thumbnails) — bundling traces/copies it
+      // incorrectly (native addon ends up missing from .output entirely); externalizing
+      // makes the SSR build resolve it via normal node_modules require at runtime instead.
+      external: ['pg', '@mastra/pg', 'playwright', 'sharp'],
     },
     build: {
       // Increase chunk size warning limit to accommodate i18n content files
@@ -29,7 +32,7 @@ export default ({ mode }: ConfigEnv) => {
       chunkSizeWarningLimit: 1000, // 1MB instead of default 500KB
       rollupOptions: {
         // Exclude standalone scripts from the build (they have shebangs that break esbuild)
-        external: [/ws-server\.mjs$/, /ws-query-worker\.mjs$/, 'playwright'],
+        external: [/ws-server\.mjs$/, /ws-query-worker\.mjs$/, 'playwright', 'sharp'],
       },
     },
     plugins: [

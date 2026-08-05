@@ -24,9 +24,10 @@ import { Semaphore } from './src/server/concurrency/semaphore.js';
 import { shouldReapIdle } from './src/server/concurrency/idle-reaper.js';
 import { sessionRegistry } from './src/server/concurrency/session-registry.js';
 import { resolveEffectivePermission } from './src/lib/permission-tier.js';
+import { classifyTerminal } from './src/shared/error-taxonomy.js';
 import { PreviewAuth } from './src/preview/auth.js';
 import { PreviewRuntime } from './src/preview/runtime.js';
-import { buildWorkerEnv } from './src/server/models/build-worker-env.js';
+import { buildWorkerEnv, buildMediaGenEnv } from './src/server/models/build-worker-env.js';
 import { openSecret } from './src/server/security/secret-box.js';
 import { isSyntheticTranscriptEntry } from './src/server/history/transcript-filter.js';
 import IORedis from 'ioredis';
@@ -385,6 +386,7 @@ async function persistSession(cookie, workspaceSessionId, realSdkSessionId, clau
         ...(title && { title }),
         ...(lineage?.projectId && { projectId: lineage.projectId }),
         ...(lineage?.branchedFromSessionId && { branchedFromSessionId: lineage.branchedFromSessionId }),
+        ...(lineage?.canvasId && { canvasId: lineage.canvasId }),
       }),
     });
 
@@ -403,6 +405,29 @@ async function persistSession(cookie, workspaceSessionId, realSdkSessionId, clau
 }
 
 /**
+ * T5: single source of truth for the t0/t1/t2 boundary computation, shared by
+ * recordPerf (called on the `result` event) and recordRunSummary (called on
+ * worker close) so the two never drift apart.
+ *   t0 = chatFrameReceivedAt (ws-server received the chat frame)
+ *   t1 = semaphoreAcquiredAt (both concurrency permits held; spawn begins)
+ *   t2 = firstTokenAt (first content-bearing assistant event: text/thinking/tool_use)
+ *   queued_ms = t1 - t0; ttft_ms = t2 - t1 (spawn overhead counts toward ttft, not queue)
+ * @param {object} stats - worker.__runStats
+ * @returns {{ ttftMs: number|null, queuedMs: number|null }}
+ */
+function computeTtftAndQueued(stats) {
+  const ttftMs =
+    stats.firstTokenAt && stats.semaphoreAcquiredAt
+      ? stats.firstTokenAt - stats.semaphoreAcquiredAt
+      : null;
+  const queuedMs =
+    stats.semaphoreAcquiredAt && stats.chatFrameReceivedAt
+      ? stats.semaphoreAcquiredAt - stats.chatFrameReceivedAt
+      : null;
+  return { ttftMs, queuedMs };
+}
+
+/**
  * P2-1/P2-3: Record per-run usage and (when metering is enabled) charge credits.
  *
  * Extracts token/turn/cost data from the SDK `result` event and posts it to
@@ -415,7 +440,7 @@ async function persistSession(cookie, workspaceSessionId, realSdkSessionId, clau
  * @param {object} ws - The client WebSocket (provides cookie + workspaceSessionId)
  * @param {object} event - The SDK `result` event
  */
-async function recordUsage(ws, event, sessionId = ws.workspaceSessionId) {
+async function recordUsage(ws, event, sessionId = ws.workspaceSessionId, runId = null) {
   try {
     const response = await fetch(`${APP_URL}/api/usage`, {
       method: 'POST',
@@ -434,6 +459,8 @@ async function recordUsage(ws, event, sessionId = ws.workspaceSessionId) {
         modelUsage: event.modelUsage ?? null,
         // result is_error, or any non-success subtype, counts as an errored run
         isError: event.is_error === true || (event.subtype && event.subtype !== 'success'),
+        // T2: caller-provided runId so usage_record and run_summary share the key.
+        runId,
       }),
     });
 
@@ -472,7 +499,7 @@ async function recordUsage(ws, event, sessionId = ws.workspaceSessionId) {
  * @param {object} event - The SDK `result` event
  * @param {string|null} sessionId - This run's output session id
  */
-async function recordPerf(ws, event, sessionId) {
+async function recordPerf(ws, event, sessionId, runStats = null) {
   try {
     const samples = [];
     const route = 'ws.generate';
@@ -500,6 +527,18 @@ async function recordPerf(ws, event, sessionId) {
     }
     if (Number.isFinite(apiMs) && apiMs > 0) {
       samples.push({ ...base, metric: 'generation.api_ms', value: apiMs, unit: 'ms' });
+    }
+    // T5 (Eval Harness M1): surface the same ttft/queued figures that land in
+    // run_summary into perf_sample too, so the Admin Performance page's runtime
+    // trend charts (which only read perf_sample) can show them.
+    if (runStats) {
+      const { ttftMs, queuedMs } = computeTtftAndQueued(runStats);
+      if (Number.isFinite(ttftMs) && ttftMs > 0) {
+        samples.push({ ...base, metric: 'generation.ttft_ms', value: ttftMs, unit: 'ms' });
+      }
+      if (Number.isFinite(queuedMs) && queuedMs >= 0) {
+        samples.push({ ...base, metric: 'generation.queued_ms', value: queuedMs, unit: 'ms' });
+      }
     }
     if (samples.length === 0) return;
 
@@ -542,6 +581,78 @@ async function recordAuditEvent(cookie, action, target, meta = {}) {
     }
   } catch (error) {
     console.error('[WS Server] Error recording audit:', error);
+  }
+}
+
+/**
+ * T3: Redact sensitive content keys from an approval request input object before
+ * writing to audit_log. Keeps paths/command strings so the audit trail answers
+ * "what was denied"; omits actual file contents / prompts.
+ */
+function redactApprovalInput(input) {
+  if (!input || typeof input !== 'object') return '{}';
+  const clone = { ...input };
+  for (const key of ['content', 'new_string', 'old_string', 'prompt']) {
+    if (key in clone) clone[key] = '[omitted]';
+  }
+  return JSON.stringify(clone).slice(0, 200);
+}
+
+/**
+ * T2: Persist the per-run summary. Called exactly once per worker close.
+ * Fire-and-forget — telemetry must never block chat or affect the run.
+ *
+ * @param {string} cookie - Auth cookie for the acting user
+ * @param {object} stats - worker.__runStats accumulated during the run
+ * @param {string} terminalState - 'done' | 'error' | 'aborted' | 'worker_crash'
+ */
+async function recordRunSummary(cookie, stats, terminalState) {
+  try {
+    const errorType = classifyTerminal({
+      terminalState,
+      intentionalAbort: terminalState === 'aborted',
+      lastResultEvent: stats.lastResultEvent,
+      approvalDenyCount: stats.approvalDenyCount,
+      lastToolErrorWasDenied: stats.lastToolErrorWasDenied,
+      lastToolError: stats.lastToolError,
+      stderrTail: stats.stderrTail,
+    });
+
+    const { ttftMs, queuedMs } = computeTtftAndQueued(stats);
+
+    const response = await fetch(`${APP_URL}/api/run-summary`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie,
+      },
+      body: JSON.stringify({
+        runId: stats.runId,
+        sessionId: stats.sessionId,
+        model: stats.model,
+        terminalState,
+        errorType,
+        errorDetail: {},
+        ttftMs,
+        totalMs: stats.totalMs,
+        queuedMs,
+        toolCallCount: stats.toolCallCount,
+        toolErrorCount: stats.toolErrorCount,
+        toolCallsByName: stats.toolCallsByName,
+        toolErrorsByName: stats.toolErrorsByName,
+        approvalRequestCount: stats.approvalRequestCount,
+        approvalDenyCount: stats.approvalDenyCount,
+        numTurns: stats.numTurns,
+        resumedFromRunId: null,
+        recoveredFromState: null,
+        evalTag: stats.evalTag,
+      }),
+    });
+    if (!response.ok) {
+      console.error('[WS Server] Failed to record run summary:', response.status, await response.text());
+    }
+  } catch (error) {
+    console.error('[WS Server] Error recording run summary:', error);
   }
 }
 
@@ -739,6 +850,18 @@ function getSessionWorkspace(userId, sessionId) {
 }
 
 /**
+ * Get canvas-workspace-specific workspace path (Canvas Agent, D5). Unlike a per-session
+ * workspace, ALL agent sessions opened against the same canvasId share this ONE directory
+ * — that's how "Agent A generates an image, Agent B in a second session sees it via ls"
+ * works. Structure: /data/users/{userId}/canvases/{canvasId}/workspace/
+ */
+function getCanvasWorkspace(userId, canvasId) {
+  const safeUserId = sanitizeId(userId);
+  const safeCanvasId = sanitizeId(canvasId);
+  return path.join(SESSIONS_ROOT, safeUserId, 'canvases', safeCanvasId, 'workspace');
+}
+
+/**
  * Ensure directory exists
  */
 async function ensureDirExists(dirPath) {
@@ -790,6 +913,15 @@ async function ensureClaudeSymlink(workspacePath, claudeHome) {
     await symlink(targetPath, symlinkPath, 'dir');
     console.log(`[WS Server] Created .claude symlink: ${symlinkPath} -> ${targetPath}`);
   } catch (error) {
+    // Canvas workspaces (D5) are shared by multiple sessions from the moment they're
+    // created, unlike a per-session workspace where this race is impossible: two
+    // sessions can both lstat a brand-new shared workspace, both see ENOENT, and both
+    // reach symlink() — the loser gets EEXIST. That's not a failure, just a concurrent
+    // creator winning first; treat it as success.
+    if (error.code === 'EEXIST') {
+      console.log(`[WS Server] .claude symlink created concurrently by another session, continuing`);
+      return;
+    }
     console.error(`[WS Server] Failed to create .claude symlink:`, error);
     throw error;
   }
@@ -930,6 +1062,60 @@ function fanoutToSession(sessionId, msg) {
   return buffered;
 }
 
+// Canvas Agent (D5) — project-channel-per-canvas broadcast (simpler than
+// sessionRegistry: a canvas viewer is subscribed regardless of whether a worker is
+// currently running, since asset_created/task_updated events can originate from a
+// DIFFERENT session in the same workspace, or from the ingestor watching the
+// filesystem directly — there's no "live worker" gate here).
+const canvasChannels = new Map(); // canvasId -> Set<ws>
+
+function subscribeCanvas(canvasId, ws) {
+  let subs = canvasChannels.get(canvasId);
+  if (!subs) {
+    subs = new Set();
+    canvasChannels.set(canvasId, subs);
+  }
+  subs.add(ws);
+}
+
+function unsubscribeCanvas(canvasId, ws) {
+  const subs = canvasChannels.get(canvasId);
+  if (!subs) return;
+  subs.delete(ws);
+  if (subs.size === 0) canvasChannels.delete(canvasId);
+}
+
+function unsubscribeCanvasConnection(ws) {
+  for (const [canvasId, subs] of canvasChannels.entries()) {
+    subs.delete(ws);
+    if (subs.size === 0) canvasChannels.delete(canvasId);
+  }
+}
+
+/** Broadcast a canvas_event to every connection currently viewing this canvas workspace. */
+function broadcastCanvas(canvasId, event, payload) {
+  const subs = canvasChannels.get(canvasId);
+  if (!subs || subs.size === 0) return;
+  const msg = { type: 'canvas_event', canvasId, event, payload };
+  for (const sub of subs) sendMessage(sub, msg);
+}
+
+/**
+ * Verify the requesting user owns this canvas workspace before letting them subscribe —
+ * never trust a client-supplied canvasId (same rationale as project membership checks).
+ */
+async function verifyCanvasOwnership(cookie, canvasId, userId) {
+  try {
+    const response = await fetch(`${APP_URL}/api/canvases/${canvasId}`, { headers: { cookie } });
+    if (!response.ok) return false;
+    const data = await response.json();
+    return data.ownerUserId === userId;
+  } catch (error) {
+    console.error('[WS Server] Error verifying canvas ownership:', error);
+    return false;
+  }
+}
+
 function nextPreviewSeq(ws) {
   ws.__previewSeq = (ws.__previewSeq || 0) + 1;
   return ws.__previewSeq;
@@ -1015,9 +1201,16 @@ const WS_BACKPRESSURE_LOW = Number(process.env.WS_BACKPRESSURE_LOW_BYTES) || 1 *
 /**
  * Create a new empty session without requiring a user message
  * This is called when user explicitly clicks "New Session" button
+ *
+ * Canvas Agent (D5): pass canvasId to bind this session to a canvas workspace instead
+ * of (mutually exclusive with) a projectId — cwd resolves to the SHARED canvas
+ * workspace directory so every session in that workspace sees the same files.
  */
-async function handleCreateSession(ws, projectId) {
-  console.log('[WS Server] Creating new empty session', projectId ? `(project ${projectId})` : '');
+async function handleCreateSession(ws, projectId, canvasId) {
+  console.log(
+    '[WS Server] Creating new empty session',
+    projectId ? `(project ${projectId})` : canvasId ? `(canvas ${canvasId})` : ''
+  );
 
   try {
     // Generate new workspace session ID
@@ -1034,8 +1227,11 @@ async function handleCreateSession(ws, projectId) {
       console.warn('[WS Server] Skills sync failed (continuing):', syncError.message);
     }
 
-    // Get session-specific workspace
-    const workspacePath = getSessionWorkspace(ws.userId, workspaceSessionId);
+    // Get session workspace — canvas workspaces are SHARED across sessions, per-session
+    // workspaces are not.
+    const workspacePath = canvasId
+      ? getCanvasWorkspace(ws.userId, canvasId)
+      : getSessionWorkspace(ws.userId, workspaceSessionId);
     await ensureDirExists(workspacePath);
 
     // Create .claude symlink in workspace
@@ -1053,15 +1249,16 @@ async function handleCreateSession(ws, projectId) {
 
     // Persist empty session to DB immediately so it appears in history list.
     // Title will be updated when first message is sent. When arming "new chat in
-    // <project>", bind it to the Project at creation (race-free). If that bind fails
-    // (e.g. caller isn't a member → POST 403 → null), fall back to a loose session so
-    // session creation never breaks on a stale/invalid project arm.
+    // <project>"/"new chat in <canvas>", bind it at creation (race-free). If that bind
+    // fails (e.g. caller isn't the owner → POST 403 → null), fall back to a loose
+    // session so session creation never breaks on a stale/invalid arm.
+    const lineage = projectId ? { projectId } : canvasId ? { canvasId } : null;
     const persisted = await persistSession(
       ws.cookie, workspaceSessionId, null, claudeHome, '未命名',
-      projectId ? { projectId } : null,
+      lineage,
     );
-    if (!persisted && projectId) {
-      console.warn('[WS Server] Project-bound session persist failed; retrying as loose session');
+    if (!persisted && lineage) {
+      console.warn('[WS Server] Bound session persist failed; retrying as loose session');
       await persistSession(ws.cookie, workspaceSessionId, null, claudeHome, '未命名');
     }
 
@@ -1232,6 +1429,37 @@ async function resolveModelForChat(cookie, modelId) {
   }
 }
 
+// Canvas Agent (D6): global default model for a media-gen capability (image/video),
+// same cache/shape as resolveModelForChat but keyed by capability, not modelId — no
+// per-project override (canvas has no projectId, D5). Non-fatal by design: a miss
+// just means buildMediaGenEnv leaves the worker env untouched, so gemini-image-runner.js
+// falls back to its own raw-env read (unlike chat, an unresolvable media-gen model
+// must not abort session creation).
+const mediaGenResolveCache = new Map(); // capability → { meta: object|null, expiresAt: number }
+
+async function resolveMediaGenCredential(cookie, capability) {
+  const cached = mediaGenResolveCache.get(capability);
+  if (cached && cached.expiresAt > Date.now()) return cached.meta;
+  try {
+    const response = await fetch(`${APP_URL}/api/models/resolve-default/${encodeURIComponent(capability)}`, {
+      headers: { cookie: cookie || '' },
+    });
+    if (!response.ok) {
+      // 404 (no default configured) and any other failure both mean "nothing to
+      // inject" — cache briefly either way so a missing config doesn't cost a fetch
+      // on every canvas generate_image call.
+      mediaGenResolveCache.set(capability, { meta: null, expiresAt: Date.now() + MODEL_RESOLVE_TTL_MS });
+      return null;
+    }
+    const meta = await response.json();
+    mediaGenResolveCache.set(capability, { meta, expiresAt: Date.now() + MODEL_RESOLVE_TTL_MS });
+    return meta;
+  } catch (error) {
+    console.error('[WS Server] media-gen resolve error (non-fatal):', error);
+    return null;
+  }
+}
+
 // ── Registry v2: global variables for the worker env ─────────────────────────
 // Fetched sealed from the app (/api/models/worker-vars), opened here with
 // KIN_SECRET_KEY, short-TTL cached like the model-resolve path. Reserved prefixes
@@ -1283,6 +1511,11 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     model: selectedModel = null,
     // Session KB scope (面板勾选): forwarded to the worker so kb_search restricts to it.
     kbIds = [],
+    // Canvas Agent (D5): client-supplied fallback; existingSession.canvasId (DB, set by
+    // handleCreateSession's persist) is the authoritative source once a session row exists.
+    canvasId: canvasIdOption = null,
+    // T5: when the chat frame arrived, measured in handleMessage.
+    chatFrameReceivedAt = null,
   } = options;
   // Concurrent sessions (PRD 2026-06-15, FR1): we NO LONGER kill a running worker
   // when a new chat starts. Other sessions keep running in the background and
@@ -1335,6 +1568,8 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     }
     // The OUTPUT session: a fresh id (D2) for a branch, else the resumed/new session itself.
     const outputSessionId = isBranch ? generateSessionId() : workspaceSessionId;
+    // T2: one runId shared by usage_record and run_summary for this run.
+    const runId = `run_${crypto.randomUUID()}`;
     // What the SDK resumes: for a branch, the SOURCE's real SDK session id (its transcript),
     // which the worker then forks (forkSession:true) → a NEW forked id comes back on the init
     // event and is persisted to D2. For a normal turn, the usual resume id.
@@ -1396,25 +1631,37 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
       console.warn('[WS Server] Skills sync failed (continuing):', syncError.message);
     }
 
-    // Resolve the workspace this run operates in. Branches SHARE their source's workspace so
-    // the forked transcript's (absolute) file paths still resolve (a copy would break them;
-    // same-uid storage makes the cross-user read/write safe). Three cases:
+    // Resolve the workspace this run operates in.
+    //
+    // Canvas Agent (D5) takes priority over the branch logic below: a canvas workspace
+    // is single-owner (no member table, never shared/branched), so ALL its sessions
+    // resolve to the SAME shared directory regardless of which session triggered this
+    // turn. existingSession.canvasId (DB, set at create time) is authoritative;
+    // canvasIdOption is a fallback for the rare case a session row doesn't exist yet
+    // (shouldn't normally happen — handleCreateSession persists first).
+    const effectiveCanvasId = existingSession?.canvasId || canvasIdOption || null;
+
+    // Branches SHARE their source's workspace so the forked transcript's (absolute) file
+    // paths still resolve (a copy would break them; same-uid storage makes the
+    // cross-user read/write safe). Three cases (skipped entirely for canvas sessions):
     //   - creating a branch (isBranch): source = existingSession (D1)
     //   - continuing a branch (existingSession.branchedFromSessionId): load the source D1
     //   - normal: the requester's own session workspace
     let wsOwnerId = ws.userId;
     let wsSessionId = workspaceSessionId;
-    if (isBranch) {
+    if (!effectiveCanvasId && isBranch) {
       wsOwnerId = existingSession.userId;
       wsSessionId = existingSession.sdkSessionId;
-    } else if (existingSession?.branchedFromSessionId && ws.cookie) {
+    } else if (!effectiveCanvasId && existingSession?.branchedFromSessionId && ws.cookie) {
       const branchSource = await loadSessionById(ws.cookie, existingSession.branchedFromSessionId);
       if (branchSource) {
         wsOwnerId = branchSource.userId;
         wsSessionId = branchSource.sdkSessionId;
       }
     }
-    const workspacePath = getSessionWorkspace(wsOwnerId, wsSessionId);
+    const workspacePath = effectiveCanvasId
+      ? getCanvasWorkspace(ws.userId, effectiveCanvasId)
+      : getSessionWorkspace(wsOwnerId, wsSessionId);
     await ensureDirExists(workspacePath);
 
     // Create .claude symlink in workspace pointing to user's .claude directory
@@ -1459,6 +1706,22 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     workerEnv.CLAUDE_HOME = claudeHome;
     workerEnv.HOME = claudeHome;  // Override HOME so os.homedir() returns user dir
     workerEnv.WORKER_CWD = workspacePath;  // Per-Session workspace
+    // Canvas Agent (D5): tells the worker to register mcp__media-gen__* (canvas
+    // sessions only — regular chat sessions never see this tool).
+    if (effectiveCanvasId) {
+      workerEnv.CANVAS_ID = effectiveCanvasId;
+      // D6: route media-gen to the admin-configured 'image'/'video' capability
+      // defaults (model-registry-v2, /admin/models) instead of raw env vars. Each
+      // capability resolves and injects independently — they can land on different
+      // connections/providers, never assumed to be the same one (Veo/Gemini is the
+      // first video provider, not necessarily the last). Non-fatal: no default
+      // configured yet → workerEnv untouched → the runner falls back to its own
+      // process.env read (today's behavior, preserved for zero-admin-action deploys).
+      const imageMeta = await resolveMediaGenCredential(ws.cookie, 'image');
+      workerEnv = buildMediaGenEnv(imageMeta, workerEnv, 'image');
+      const videoMeta = await resolveMediaGenCredential(ws.cookie, 'video');
+      workerEnv = buildMediaGenEnv(videoMeta, workerEnv, 'video');
+    }
 
     // Registry v2: admin-managed global variables (sealed over the internal API,
     // opened here just-in-time). Applied BEFORE model routing so ANTHROPIC_* routing
@@ -1636,6 +1899,10 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     }
     await workerSemaphore.acquire();
 
+    // T5: both the per-user and global permits are now held — this is t1.
+    // queued_ms = t1 - chatFrameReceivedAt; ttft_ms begins here (includes spawn).
+    const semaphoreAcquiredAt = Date.now();
+
     // S1 — both permits are now held. Define their releases (flag-based) and ARM the
     // leak net BEFORE spawn, so a throw ANYWHERE in setup frees both permits and
     // cleans up. `worker` is a `let` assigned at spawn, so the net stays valid even
@@ -1684,7 +1951,38 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     // (done/error/aborted). If the worker dies without one (e.g. a crash), the
     // close handler emits a terminal error so the client never hangs "running".
     worker.__terminalSent = false;
+    worker.__terminalError = false;
     worker.__intentionalAbort = false;
+
+    // T2/T3/T5: per-run accumulator. Hot path only does memory writes; close handler
+    // flushes once. toolUseIdToName maps tool_use ids to tool names so that a later
+    // tool_result.is_error can be attributed to the right tool. deniedToolUseIds
+    // tracks which tools were explicitly denied by the user; their is_error results
+    // are NOT counted as tool failures (they are permission_denied).
+    worker.__runStats = {
+      runId,
+      sessionId: outputSessionId,
+      userId: ws.userId,
+      evalTag: null,
+      chatFrameReceivedAt,
+      semaphoreAcquiredAt,
+      firstTokenAt: null,
+      model: null,
+      numTurns: 0,
+      totalMs: null,
+      lastResultEvent: null,
+      lastToolError: false,
+      lastToolErrorWasDenied: false,
+      toolUseIdToName: new Map(),
+      deniedToolUseIds: new Set(),
+      toolCallCount: 0,
+      toolErrorCount: 0,
+      toolCallsByName: {},
+      toolErrorsByName: {},
+      approvalRequestCount: 0,
+      approvalDenyCount: 0,
+      stderrTail: '',
+    };
 
     // Send query request to worker
     // Pass sdkResumeId for SDK conversation resume
@@ -1720,6 +2018,11 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
     // D2 (the fork target), not the resumed source — so the init-event capture below maps +
     // persists the forked SDK id onto D2 and tells the client to switch to D2.
     ws.workspaceSessionId = outputSessionId;
+
+    // Canvas Agent (D5): toolUseId -> generation_task id for THIS run, so the
+    // media_gen_task_result frame (which only carries toolUseId) can find the task row
+    // media_gen_task_started created. Scoped to this handleChat call's closure.
+    const mediaGenTaskIds = new Map();
 
     // Read responses line by line
     const rl = createInterface({ input: worker.stdout });
@@ -1826,12 +2129,74 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
               });
             }
           }
+          // T2/T5: capture result event fields for the run_summary and tool accounting.
+          if (event.type === 'result') {
+            worker.__runStats.lastResultEvent = event;
+            worker.__runStats.numTurns = event.num_turns ?? 0;
+            worker.__runStats.totalMs = Number.isFinite(Number(event.duration_ms)) ? Number(event.duration_ms) : null;
+            if (event.modelUsage && typeof event.modelUsage === 'object') {
+              const models = Object.keys(event.modelUsage);
+              if (models.length > 0) worker.__runStats.model = models[0];
+            }
+          }
+
+          // T2: count tool_use blocks on assistant events and tool_result errors on user events.
+          // SDK message events carry content under event.message.content (see
+          // ws-query-worker.mjs assistant handling / ws-adapter.ts), NOT event.content.
+          if (event.type === 'assistant' && Array.isArray(event.message?.content)) {
+            for (const block of event.message.content) {
+              if (block?.type === 'tool_use' && block.id) {
+                worker.__runStats.toolCallCount++;
+                if (block.name) {
+                  worker.__runStats.toolUseIdToName.set(block.id, block.name);
+                  // M1: per-tool call denominator (mirrors toolErrorsByName's numerator)
+                  // so the report can compute a success rate per tool, not just a raw count.
+                  worker.__runStats.toolCallsByName[block.name] =
+                    (worker.__runStats.toolCallsByName[block.name] || 0) + 1;
+                }
+                // T5: first content-bearing assistant event marks TTFT start boundary (t2).
+                if (worker.__runStats.firstTokenAt === null) {
+                  worker.__runStats.firstTokenAt = Date.now();
+                }
+              } else if (
+                (block?.type === 'text' || block?.type === 'thinking') &&
+                worker.__runStats.firstTokenAt === null
+              ) {
+                worker.__runStats.firstTokenAt = Date.now();
+              }
+            }
+          } else if (event.type === 'user' && Array.isArray(event.message?.content)) {
+            for (const block of event.message.content) {
+              if (block?.type === 'tool_result' && block.is_error !== true) {
+                // A later successful tool_result clears the "last tool errored" state —
+                // lastToolError means the MOST RECENT tool_result, not "any error ever"
+                // (else one recovered transient error misattributes a later api_error).
+                worker.__runStats.lastToolError = false;
+                worker.__runStats.lastToolErrorWasDenied = false;
+              } else if (block?.type === 'tool_result' && block.is_error === true) {
+                worker.__runStats.lastToolError = true;
+                const wasDenied =
+                  block.tool_use_id && worker.__runStats.deniedToolUseIds.has(block.tool_use_id);
+                worker.__runStats.lastToolErrorWasDenied = !!wasDenied;
+                if (!wasDenied) {
+                  // Deny-induced errors are NOT counted as tool failures.
+                  worker.__runStats.toolErrorCount++;
+                  const toolName = block.tool_use_id
+                    ? worker.__runStats.toolUseIdToName.get(block.tool_use_id) || 'unknown'
+                    : 'unknown';
+                  worker.__runStats.toolErrorsByName[toolName] =
+                    (worker.__runStats.toolErrorsByName[toolName] || 0) + 1;
+                }
+              }
+            }
+          }
+
           // P2-1: record per-run usage on the terminal `result` event. Fire-and-
           // forget; applies to silent runs too (they still consume tokens).
           if (event.type === 'result') {
-            recordUsage(ws, event, outputSessionId);
+            recordUsage(ws, event, outputSessionId, worker.__runStats.runId);
             // P2 observability: record generation latency/throughput (fire-and-forget).
-            recordPerf(ws, event, outputSessionId);
+            recordPerf(ws, event, outputSessionId, worker.__runStats);
             // Conversation search increment (FR2): the turn's transcript is written by now —
             // re-index this session so the new messages become searchable within seconds.
             void enqueueMessageIndex(ws.userId, outputSessionId);
@@ -1844,6 +2209,13 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
           }
         } else if (msg.type === 'approval_request') {
           // Ask-mode HITL: relay the worker's tool-approval request to the client.
+          // T3: count and audit the request (security-relevant).
+          worker.__runStats.approvalRequestCount++;
+          recordAuditEvent(ws.cookie, 'approval.request', outputSessionId, {
+            toolUseID: msg.toolUseID,
+            toolName: msg.toolName,
+            input: redactApprovalInput(msg.input),
+          });
           if (!silentInit) {
             fanoutToSession(outputSessionId, {
               type: 'approval_request',
@@ -1856,13 +2228,79 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
               seq: msg.seq,
             });
           }
+        } else if (msg.type === 'media_gen_task_started') {
+          // Canvas Agent (D5): worker saw a mcp__media-gen__* tool_use content block
+          // (see ws-query-worker.mjs event loop) — create the generation_task row +
+          // reserve canvas slots via the internal API (ws-server has no direct DB
+          // access — see build-worker-env.js comment on why these files stay .js).
+          if (effectiveCanvasId) {
+            (async () => {
+              try {
+                const response = await fetch(`${APP_URL}/api/internal/canvas/tasks`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', cookie: ws.cookie },
+                  body: JSON.stringify({
+                    canvasId: effectiveCanvasId,
+                    sessionId: outputSessionId,
+                    kind: msg.kind || 't2i',
+                    modelSlug: msg.modelSlug || null,
+                    params: msg.input || {},
+                  }),
+                });
+                if (!response.ok) {
+                  console.error('[WS Server] media_gen_task_started: task create failed', response.status, await response.text());
+                  return;
+                }
+                const task = await response.json();
+                mediaGenTaskIds.set(msg.toolUseId, task.id);
+                broadcastCanvas(effectiveCanvasId, 'task_created', task);
+              } catch (error) {
+                console.error('[WS Server] media_gen_task_started error:', error);
+              }
+            })();
+          }
+        } else if (msg.type === 'media_gen_task_result') {
+          if (effectiveCanvasId) {
+            (async () => {
+              const taskId = mediaGenTaskIds.get(msg.toolUseId);
+              if (!taskId) {
+                console.error('[WS Server] media_gen_task_result: no matching task for toolUseId', msg.toolUseId);
+                return;
+              }
+              mediaGenTaskIds.delete(msg.toolUseId);
+              try {
+                const response = await fetch(`${APP_URL}/api/internal/canvas/tasks/${taskId}/complete`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', cookie: ws.cookie },
+                  body: JSON.stringify(
+                    msg.isError
+                      ? { status: 'failed', error: msg.error || 'generation failed' }
+                      : { status: 'done', files: msg.files || [] }
+                  ),
+                });
+                if (!response.ok) {
+                  console.error('[WS Server] media_gen_task_result: task complete failed', response.status, await response.text());
+                  return;
+                }
+                const result = await response.json();
+                broadcastCanvas(effectiveCanvasId, 'task_updated', { taskId, status: msg.isError ? 'failed' : 'done', error: msg.error });
+                for (const asset of result.assets || []) {
+                  broadcastCanvas(effectiveCanvasId, 'asset_created', asset);
+                }
+              } catch (error) {
+                console.error('[WS Server] media_gen_task_result error:', error);
+              }
+            })();
+          }
         } else if (msg.type === 'done') {
           worker.__terminalSent = true;
+          worker.__terminalError = false;
           if (!silentInit) {
             fanoutToSession(outputSessionId, { type: 'done', seq: msg.seq });
           }
         } else if (msg.type === 'error') {
           worker.__terminalSent = true;
+          worker.__terminalError = true;
           fanoutToSession(outputSessionId, {
             type: 'error',
             code: 'worker_error',
@@ -1882,7 +2320,12 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
 
     // Log worker stderr
     worker.stderr.on('data', (data) => {
-      console.log(`[Worker ${ws.userId}]`, data.toString().trim());
+      const chunk = data.toString();
+      console.log(`[Worker ${ws.userId}]`, chunk.trim());
+      // T1: keep a tail of stderr for env_error classification on worker_crash.
+      if (worker.__runStats) {
+        worker.__runStats.stderrTail = (worker.__runStats.stderrTail + chunk).slice(-500);
+      }
     });
 
     worker.stderr.on('error', (error) => {
@@ -1922,6 +2365,16 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
           console.log('[WS Server] Worker exited normally');
         }
 
+        // T2: determine terminal state BEFORE any fanout so run_summary is consistent.
+        let terminalState = 'done';
+        if (worker.__intentionalAbort) {
+          terminalState = 'aborted';
+        } else if (!worker.__terminalSent) {
+          terminalState = 'worker_crash';
+        } else if (worker.__terminalError) {
+          terminalState = 'error';
+        }
+
         if (isCurrent) {
           if (worker.__intentionalAbort && !silentInit) {
             // User abort: tell whoever is viewing this session that the run stopped
@@ -1946,6 +2399,12 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
             worker.__terminalSent = true;
           }
         }
+
+        // T2: one-shot run summary flush. Fire-and-forget; failures are logged only.
+        if (worker.__runStats) {
+          recordRunSummary(ws.cookie, worker.__runStats, terminalState);
+        }
+
         console.log('[WS Server] ============================================');
       } catch (closeError) {
         console.error('[WS Server] ========== ERROR IN WORKER CLOSE HANDLER ==========');
@@ -2037,8 +2496,9 @@ async function handleMessage(ws, msg) {
     case 'create_session':
       // Explicitly create a new empty session (without user message). Projects: an
       // optional projectId binds it to a Project at creation (race-free), used by
-      // "new chat in <project>".
-      await handleCreateSession(ws, message.projectId);
+      // "new chat in <project>". Canvas Agent (D5): canvasId is the same idea for a
+      // canvas workspace — mutually exclusive with projectId.
+      await handleCreateSession(ws, message.projectId, message.canvasId);
       break;
 
     case 'init_session':
@@ -2051,7 +2511,7 @@ async function handleMessage(ws, msg) {
         });
         return;
       }
-      await handleChat(ws, ' ', message.sessionId, { silentInit: true });
+      await handleChat(ws, ' ', message.sessionId, { silentInit: true, canvasId: message.canvasId });
       break;
 
     case 'chat':
@@ -2065,11 +2525,15 @@ async function handleMessage(ws, msg) {
         });
         return;
       }
+      // T5: mark when the chat frame arrived so queued_ms can measure wait time.
+      const chatFrameReceivedAt = Date.now();
       await handleChat(ws, message.content, message.sessionId, {
         skillSlug: message.skillSlug,
         permissionTier: message.permissionTier,
         model: message.model,
         kbIds: message.kbIds,
+        canvasId: message.canvasId,
+        chatFrameReceivedAt,
       });
       break;
 
@@ -2257,14 +2721,26 @@ async function handleMessage(ws, msg) {
       const approvalSessionId = message.sessionId || ws.activeRunSessionId;
       const ownsApproval = !!approvalSessionId && sessionRegistry.ownerOf(approvalSessionId) === ws.userId;
       const w = ownsApproval ? sessionRegistry.getWorker(approvalSessionId) : null;
+      const decision = message.decision === 'allow' ? 'allow' : 'deny';
       if (w && w.stdin && w.stdin.writable && message.toolUseID) {
         w.stdin.write(
           JSON.stringify({
             type: 'approval_response',
             toolUseID: message.toolUseID,
-            decision: message.decision === 'allow' ? 'allow' : 'deny',
+            decision,
           }) + '\n',
         );
+
+        // T3: audit the decision and count deny on the run that requested approval.
+        // The worker may belong to a different tab than the one sending the response.
+        recordAuditEvent(ws.cookie, 'approval.decision', approvalSessionId, {
+          toolUseID: message.toolUseID,
+          decision,
+        });
+        if (decision === 'deny' && w.__runStats) {
+          w.__runStats.approvalDenyCount++;
+          if (message.toolUseID) w.__runStats.deniedToolUseIds.add(message.toolUseID);
+        }
       }
       break;
     }
@@ -2287,6 +2763,26 @@ async function handleMessage(ws, msg) {
       // No ownership check needed: a connection can only remove ITSELF from a set.
       if (message.sessionId) {
         sessionRegistry.unsubscribe(message.sessionId, ws);
+      }
+      break;
+
+    case 'subscribe_canvas':
+      // Canvas Agent (D5): join the broadcast channel for a canvas workspace's
+      // asset/task events. Ownership-gated (canvas_workspace has no member table).
+      if (!message.canvasId) {
+        sendMessage(ws, { type: 'error', code: 'invalid_message', message: 'Missing canvasId for subscribe_canvas', retriable: false });
+        return;
+      }
+      if (await verifyCanvasOwnership(ws.cookie, message.canvasId, ws.userId)) {
+        subscribeCanvas(message.canvasId, ws);
+      } else {
+        sendMessage(ws, { type: 'error', code: 'forbidden', message: 'Not the owner of that canvas workspace', retriable: false });
+      }
+      break;
+
+    case 'unsubscribe_canvas':
+      if (message.canvasId) {
+        unsubscribeCanvas(message.canvasId, ws);
       }
       break;
 
@@ -2396,6 +2892,7 @@ wss.on('connection', async (ws, request) => {
     // Just drop this connection from every session it was viewing; each worker is
     // reclaimed on its own completion / abort / idle safeguard.
     sessionRegistry.unsubscribeConnection(ws);
+    unsubscribeCanvasConnection(ws);
   });
 
   ws.on('error', (error) => {

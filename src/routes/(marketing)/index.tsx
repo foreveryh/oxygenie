@@ -6,12 +6,12 @@ export const Route = createFileRoute('/(marketing)/')({
   component: RouteComponent,
 });
 
-const GH = 'https://github.com/deeptoai/kin';
-const GH_DEPLOY = 'https://github.com/deeptoai/kin/blob/main/docs/deployment/mac-mini.md';
+const GH = 'https://github.com/deeptoai-com/kin';
+const GH_DEPLOY = 'https://github.com/deeptoai-com/kin/blob/main/docs/deployment/mac-mini.md';
 
 /* Low-density, image-led layout (Cursor-style): one idea per scroll —
-   short heading + one line + a big visual. Replace .shot placeholders with
-   real screenshots/GIFs of /agents/c later. */
+   short heading + one line + a big visual. Replace the mock visuals with the
+   screenshot/GIF assets listed in docs/gtm/media-checklist.md before GTM. */
 function RouteComponent() {
   const c = useIntlayer('home');
 
@@ -21,7 +21,7 @@ function RouteComponent() {
       <section className="hero" id="top">
         <div className="wrap">
           <div className="tag">
-            $ kin up —— <b>self-hosted</b> · any-model · sandboxed · AGPLv3
+            $ kin up —— <b>self-hosted</b> · any-model · sandboxed · Apache-2.0
           </div>
           <h1>
             <span className="soft">{c.hero.titleSoft}</span>
@@ -301,15 +301,15 @@ function RouteComponent() {
                 <i style={{ background: '#3a3833' }} /> &nbsp;deploy.sh
               </div>
               <div className="body">
-                <span className="c"># three steps to launch</span>
+                <span className="c"># fresh VPS to trusted HTTPS</span>
                 <br />
-                <span className="k">$</span> git clone github.com/deeptoai/kin
+                <span className="k">$</span> git clone https://github.com/deeptoai-com/kin.git
                 <br />
-                <span className="k">$</span> cp .env.example .env <span className="c"># add a model key</span>
+                <span className="k">$</span> cd kin
                 <br />
-                <span className="k">$</span> docker compose up -d
+                <span className="k">$</span> sudo bash scripts/install-vps.sh
                 <br />
-                <span className="g">✓</span> kin up · https://kin.local
+                <span className="g">✓</span> kin up · TLS · preview wildcard
                 <br />
                 <span className="k">$</span> <span className="tcur" />
               </div>
@@ -340,7 +340,7 @@ function RouteComponent() {
               <br />
               single-org · multi-user · fully-sandboxed · provider-agnostic
               <br />
-              AGPLv3 + commercial · deeptoai · 2026
+              Apache-2.0 open core · deeptoai · 2026
             </div>
             <a className="nbtn" href="#top">
               ↑ top

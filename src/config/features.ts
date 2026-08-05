@@ -15,6 +15,7 @@ export const FEATURE_CONFIG = {
   // Section 2: Other
   documents: true,        // Documents / KB page - enabled
   ocr: true,              // OCR 文字识别 standalone converter (OCR module O2) - enabled
+  canvas: true,           // 画布 Agent (D5: independent top-level entity, not a Project) - enabled
   dashboard: false,       // Dashboards page - hidden
 
   // Cloud features (navClouds section)

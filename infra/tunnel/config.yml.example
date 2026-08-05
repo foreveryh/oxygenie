@@ -1,4 +1,4 @@
-# Cloudflare Tunnel ingress for the OxyGenie "Path C / tunnel" deploy.
+# Cloudflare Tunnel ingress for the Kin "Path B / tunnel" deploy.
 #
 # Copy this to config.yml, then fill `tunnel:` with your tunnel id (and write
 # credentials.json) — both are derived from your tunnel token. See README.md /
@@ -6,11 +6,11 @@
 #   cp config.yml.example config.yml
 #   ...decode token -> credentials.json + sed REPLACE_WITH_TUNNEL_ID -> <your id>
 #
-# Everything (oxygenie.cc + every *.oxygenie.cc preview subdomain) is forwarded to the
+# Everything (your app host + every *.APP_HOSTNAME preview subdomain) is forwarded to the
 # bundled Traefik, which does the Host-based routing (app vs preview-<id>). Cloudflare
 # terminates TLS at the edge, so the tunnel→Traefik hop is plain HTTP.
 #
-# Replace oxygenie.cc with your own domain in both hostnames below.
+# Replace oxygenie.cc with your own app hostname in both hostnames below.
 tunnel: REPLACE_WITH_TUNNEL_ID
 credentials-file: /etc/cloudflared/credentials.json
 ingress:

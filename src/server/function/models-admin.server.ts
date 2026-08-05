@@ -108,6 +108,8 @@ const modelInputSchema = z.object({
   connectionId: z.string().min(1),
   model: z.string().min(1),
   capabilities: z.array(z.enum(MODEL_CAPABILITIES)).optional(),
+  mediaAdapter: z.string().min(1).nullish(),
+  mediaConfig: z.record(z.string(), z.json()).optional(),
   tags: z.array(z.string()).optional(),
   enabled: z.boolean().optional(),
 });

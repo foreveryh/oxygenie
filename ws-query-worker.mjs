@@ -8,6 +8,7 @@
 
 import { createSdkMcpServer, query, tool, forkSession as forkSdkSession } from '@anthropic-ai/claude-agent-sdk';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
@@ -15,6 +16,8 @@ import { createPathSecurity } from './src/claude/path-security.js';
 import { resolveMcpServerConfigs } from './src/claude/mcp/manager.js';
 import { runPython } from './src/claude/python/runner.js';
 import { generateImage } from './src/claude/glm-image/runner.js';
+import { generateMedia, mediaRouteFromEnv } from './src/claude/media-gen/adapter-registry.js';
+import { validateMediaInput } from './src/claude/media-gen/media-capabilities.js';
 import { runBash } from './src/claude/bash/runner.js';
 import { ensureSandbox, sandboxStatus } from './src/claude/execution/sandbox.js';
 import { getExecutionRuntime } from './src/claude/execution/index.js';
@@ -536,6 +539,157 @@ async function startRun(request) {
       tools: [glmImageGenerateTool],
     });
 
+    // Canvas Agent (D5/D6) — mcp__media-gen__generate_image. Only registered for
+    // canvas sessions (CANVAS_ID env var set by ws-server, see handleChat). The
+    // handler emits its OWN media_gen_task_started/result frames directly (rather
+    // than ws-server trying to reconstruct tool_use/tool_result correlation from raw
+    // SDK content blocks, whose exact shape isn't worth depending on) — it generates a
+    // correlation id up front, reports "started" before the (slow) API call, then
+    // "result" after, so ws-server can show a Generating placeholder in between.
+    const mediaGenGenerateImageTool = tool(
+      'generate_image',
+      'Generate one or more images with the configured image model. Images automatically appear on ' +
+      "the user's canvas — do not mention file paths, just describe what you generated.",
+      {
+        prompt: z.string().min(1).describe('Image generation prompt (required)'),
+        count: z.number().int().min(1).max(4).optional().describe('Number of images (1-4, default 1)'),
+        aspect: z.enum(['1:1', '3:4', '4:3', '9:16', '16:9']).optional().describe('Aspect ratio (default 1:1)'),
+      },
+      async (args) => {
+        const toolUseId = crypto.randomUUID();
+        const route = mediaRouteFromEnv('image');
+        writeFrame({
+          type: 'media_gen_task_started',
+          toolUseId,
+          kind: 't2i',
+          modelSlug: route?.id,
+          input: { prompt: args.prompt, count: args.count ?? 1, aspect: args.aspect ?? '1:1' },
+        });
+        try {
+          if (!route) throw new Error('No image generation model is configured');
+          const input = { prompt: args.prompt, count: args.count, aspect: args.aspect };
+          validateMediaInput({ capability: 'image', route, input });
+          const result = await generateMedia({
+            capability: 'image',
+            route,
+            input,
+            outputDir: config.cwd,
+          });
+          writeFrame({ type: 'media_gen_task_result', toolUseId, isError: false, files: result.files });
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, count: result.files.length }),
+            }],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          writeFrame({ type: 'media_gen_task_result', toolUseId, isError: true, error: message });
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: message }), isError: true }],
+          };
+        }
+      }
+    );
+
+    // Provider-neutral modes and semantic reference roles. imageRelPath remains as
+    // the legacy one-frame shortcut used by the existing Animate action.
+    const mediaGenGenerateVideoTool = tool(
+      'generate_video',
+      'Generate a video with the configured video model. Videos automatically appear on ' +
+      "the user's canvas — do not mention file paths, just describe what you generated. " +
+      'Use references with semantic roles when the configured model supports first/last frames or reference media.',
+      {
+        prompt: z.string().min(1).describe('Video generation / motion prompt (required)'),
+        imageRelPath: z.string().optional().describe('Existing canvas image asset filename to animate (image-to-video)'),
+        mode: z.enum(['text_to_video', 'first_last_frame', 'reference', 'video_edit']).optional(),
+        references: z.array(z.object({
+          relPath: z.string().min(1),
+          role: z.enum(['first_frame', 'last_frame', 'reference_image', 'reference_video', 'reference_audio', 'edit_source']),
+        })).max(15).optional().describe('Canvas media paths and their role in this generation'),
+        // The model-specific constraint manifest validates these at runtime. Keeping
+        // the tool schema broad lets future models expose values such as H3's 2K/15s
+        // without a worker-code release.
+        aspect: z.string().max(16).optional().describe('Aspect ratio supported by the configured model'),
+        durationSeconds: z.number().int().min(1).max(3600).optional().describe('Video length supported by the configured model'),
+        resolution: z.string().max(16).optional().describe('Video resolution supported by the configured model'),
+      },
+      async (args) => {
+        const toolUseId = crypto.randomUUID();
+        const route = mediaRouteFromEnv('video');
+        const requestedReferences = args.references?.length
+          ? args.references
+          : args.imageRelPath ? [{ relPath: args.imageRelPath, role: 'first_frame' }] : [];
+        const mediaTypeForRole = (role) => role === 'reference_video' || role === 'edit_source'
+          ? 'video'
+          : role === 'reference_audio' ? 'audio' : 'image';
+        const references = requestedReferences.map((reference, order) => {
+          const root = path.resolve(config.cwd);
+          const fullPath = path.resolve(root, reference.relPath);
+          if (fullPath !== root && !fullPath.startsWith(`${root}${path.sep}`)) {
+            throw new Error('Reference path must stay inside the canvas workspace');
+          }
+          return { path: fullPath, mediaType: mediaTypeForRole(reference.role), role: reference.role, order };
+        });
+        const effectiveMode = args.mode
+          || (references.some((reference) => reference.role.startsWith('reference_')) ? 'reference'
+            : references.length ? 'first_last_frame' : 'text_to_video');
+        const kind = references.some((reference) => reference.mediaType === 'video')
+          ? 'v2v' : references.some((reference) => reference.mediaType === 'image') ? 'i2v' : 't2v';
+        writeFrame({
+          type: 'media_gen_task_started',
+          toolUseId,
+          kind,
+          modelSlug: route?.id,
+          input: {
+            prompt: args.prompt,
+            mode: effectiveMode,
+            ...(args.aspect ? { aspect: args.aspect } : {}),
+            ...(args.durationSeconds ? { durationSeconds: args.durationSeconds } : {}),
+            ...(args.resolution ? { resolution: args.resolution } : {}),
+          },
+        });
+        try {
+          if (!route) throw new Error('No video generation model is configured');
+          const input = {
+            prompt: args.prompt,
+            mode: effectiveMode,
+            references,
+            imagePath: references.find((reference) => reference.role === 'first_frame')?.path,
+            lastImagePath: references.find((reference) => reference.role === 'last_frame')?.path,
+            aspect: args.aspect,
+            durationSeconds: args.durationSeconds,
+            resolution: args.resolution,
+          };
+          validateMediaInput({ capability: 'video', route, input });
+          const result = await generateMedia({
+            capability: 'video',
+            route,
+            input,
+            outputDir: config.cwd,
+          });
+          writeFrame({ type: 'media_gen_task_result', toolUseId, isError: false, files: result.files });
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ success: true, count: result.files.length }),
+            }],
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          writeFrame({ type: 'media_gen_task_result', toolUseId, isError: true, error: message });
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ error: message }), isError: true }],
+          };
+        }
+      }
+    );
+
+    const mediaGenMcpServer = createSdkMcpServer({
+      name: 'media-gen',
+      tools: [mediaGenGenerateImageTool, mediaGenGenerateVideoTool],
+    });
+
     // RAG R2 (final spec D6/D7): kb_search — semantic retrieval over the user's
     // ingested ('rag'-tier) documents. The worker stays unprivileged: the tool calls
     // back into the app (/api/rag/search) with the user's cookie from the STDIN
@@ -762,6 +916,16 @@ async function startRun(request) {
       }
     }
 
+    // Canvas Agent (D5) — media-gen is a built-in capability of canvas sessions, not a
+    // user-toggleable catalog MCP (same rationale as bash/kb_search above): merged in
+    // AFTER resolveMcpServerConfigs, gated on CANVAS_ID (set by ws-server only when
+    // this session's cwd is a canvas workspace — see handleChat's workerEnv.CANVAS_ID).
+    if (process.env.CANVAS_ID) {
+      mcpServers['media-gen'] = mediaGenMcpServer;
+      allowedTools.push('mcp__media-gen__generate_image', 'mcp__media-gen__generate_video');
+      console.error('[Worker] media-gen tool: REGISTERED (canvas session)');
+    }
+
     // kb_search is a BUILT-IN capability (like Read/Grep), not a curated-catalog MCP —
     // resolveMcpServerConfigs only passes through catalog-enabled sdk servers, so it is
     // merged here AFTER resolution. Registered only when the run carries user auth.
@@ -840,8 +1004,24 @@ their [n] markers; do not present low-confidence passages as established fact.` 
 - Do NOT emulate shell commands through Python subprocess/os.system when shell work is requested.
 - (For a runnable web app, still hand the final build + serve to the Preview engine — see below.)
 ` : '';
+    const canvasGuidance = process.env.CANVAS_ID ? `
+**Canvas workspace** — you are working in a shared "画布" (canvas) workspace. The current
+directory is this workspace; any image/video files you or your tools create here
+automatically appear on the user's canvas (a visual board, not just this chat).
+- To generate an image, call \`mcp__media-gen__generate_image\` (prompt, optional count
+  1-4, optional aspect ratio). The image(s) will appear on the canvas — do not mention
+  file paths or say "saved to X"; just describe what you generated.
+- To generate a video, call \`mcp__media-gen__generate_video\` (prompt, optional
+  provider-neutral mode/references with semantic roles, optional
+  aspect/durationSeconds/resolution). imageRelPath remains a first-frame shortcut.
+  Video generation takes 1-3 minutes — mention that it's in progress rather than
+  going silent.
+- Only promise capabilities you actually have. If asked for something you have no tool
+  for, say so plainly rather than pretending to have done it.
+` : '';
     const workspaceInstructions = `
 ${ragGuardrailInstructions}
+${canvasGuidance}
 
 IMPORTANT - File Access and Path Boundaries:
 

@@ -49,10 +49,14 @@ export const getPerfOverview = createServerFn({ method: 'GET' })
           ),
         );
 
-    const [genTotal, tokensPerS, apiMs, ragRows] = await Promise.all([
+    const [genTotal, tokensPerS, apiMs, ttftMs, queuedMs, ragRows] = await Promise.all([
       metricStats('generation.total_ms'),
       metricStats('generation.tokens_per_s'),
       metricStats('generation.api_ms'),
+      // T5 (Eval Harness PR-1): true runtime TTFT, split from queue wait — see
+      // ws-server.mjs recordRunSummary's t0/t1/t2 boundary comment for the definitions.
+      metricStats('generation.ttft_ms'),
+      metricStats('generation.queued_ms'),
       db
         .select({
           count: sql<number>`count(*)::int`,
@@ -68,6 +72,8 @@ export const getPerfOverview = createServerFn({ method: 'GET' })
       generation: genTotal[0] ?? { count: 0, p50: 0, p95: 0, avg: 0, max: 0 },
       tokensPerSecond: tokensPerS[0] ?? { count: 0, p50: 0, p95: 0, avg: 0, max: 0 },
       apiMs: apiMs[0] ?? { count: 0, p50: 0, p95: 0, avg: 0, max: 0 },
+      ttftMs: ttftMs[0] ?? { count: 0, p50: 0, p95: 0, avg: 0, max: 0 },
+      queuedMs: queuedMs[0] ?? { count: 0, p50: 0, p95: 0, avg: 0, max: 0 },
       rag: ragRows[0] ?? { count: 0, p50: 0, p95: 0 },
     };
   });

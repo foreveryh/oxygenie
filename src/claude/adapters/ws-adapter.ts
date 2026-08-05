@@ -107,7 +107,7 @@ type StreamEvent = {
 
 // WebSocket message types (matching ws-server.ts)
 type InboundMessage =
-  | { type: 'create_session'; projectId?: string }
+  | { type: 'create_session'; projectId?: string; canvasId?: string }
   | { type: 'init_session'; sessionId: string }
   | { type: 'chat'; content: string; sessionId?: string; skillSlug?: string; permissionTier?: string; model?: string; kbIds?: string[] }
   | { type: 'resume'; sessionId: string }
@@ -120,7 +120,9 @@ type InboundMessage =
   | { type: 'stop_preview'; sessionId?: string }
   | { type: 'share_preview'; previewId: string; sessionId?: string }
   | { type: 'approval_response'; toolUseID: string; decision: 'allow' | 'deny'; sessionId?: string }
-  | { type: 'ping' };
+  | { type: 'ping' }
+  | { type: 'subscribe_canvas'; canvasId: string }
+  | { type: 'unsubscribe_canvas'; canvasId: string };
 
 // Concurrent sessions: stream frames now carry the workspace `sessionId` they
 // belong to, so the adapter routes them to the right conversation (and drops
@@ -147,7 +149,8 @@ type OutboundMessage =
       seq?: number;
       sessionId?: string;
     }
-  | { type: 'pong' };
+  | { type: 'pong' }
+  | { type: 'canvas_event'; canvasId: string; event: string; payload: unknown };
 
 // Assistant UI Part Types
 type TextPart = {
@@ -312,6 +315,69 @@ function classifyAttachment(attachment: AttachmentDescriptor): AttachmentHint {
   };
 }
 
+/** Canvas Agent (D5/F10) — a selected canvas asset, referenced in the outgoing prompt.
+ * F9.4: text nodes carry `content` inline (cheap, unlike media) so the Agent has the
+ * note's text without a round-trip `cat notes/{id}.md` — matches the reference
+ * product's observed behavior (select text node → ask about it → Agent recites it). */
+export type CanvasRefDescriptor = {
+  relPath: string;
+  type: 'image' | 'video' | 'audio' | 'text';
+  width?: number;
+  height?: number;
+  durationSec?: number;
+  content?: string;
+};
+
+function extractRunConfigCanvasRefs(runConfig?: ChatModelRunOptions['runConfig']): CanvasRefDescriptor[] {
+  const custom = runConfig?.custom;
+  if (!custom || typeof custom !== 'object') return [];
+  const raw = (custom as { canvasRefs?: unknown }).canvasRefs;
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const candidate = item as Partial<CanvasRefDescriptor>;
+      if (typeof candidate.relPath !== 'string' || !candidate.relPath.trim()) return null;
+      if (candidate.type !== 'image' && candidate.type !== 'video' && candidate.type !== 'audio' && candidate.type !== 'text') return null;
+      // Omit (not just `undefined`-set) keys so the inferred literal type actually
+      // matches CanvasRefDescriptor's optional fields for the type predicate below.
+      return {
+        relPath: candidate.relPath,
+        type: candidate.type,
+        ...(typeof candidate.width === 'number' ? { width: candidate.width } : {}),
+        ...(typeof candidate.height === 'number' ? { height: candidate.height } : {}),
+        ...(typeof candidate.durationSec === 'number' ? { durationSec: candidate.durationSec } : {}),
+        ...(typeof candidate.content === 'string' ? { content: candidate.content } : {}),
+      };
+    })
+    .filter((item): item is CanvasRefDescriptor => Boolean(item));
+}
+
+/**
+ * 【画布引用】block (impl spec §6.3) — lists the canvas assets selected when the
+ * message was sent, so the Agent knows what "these"/"this image" refers to without
+ * having to `ls` the workspace and guess. Same shape/placement as 【附件信息】.
+ */
+function buildCanvasRefsBlock(refs: CanvasRefDescriptor[]): string {
+  if (refs.length === 0) return '';
+  const lines: string[] = ['【画布引用】'];
+  refs.forEach((ref, index) => {
+    if (ref.type === 'text') {
+      lines.push(`${index + 1}. ${ref.relPath} (text): ${ref.content ?? ''}`);
+      return;
+    }
+    const dims = ref.type === 'image'
+      ? (ref.width && ref.height ? ` ${ref.width}x${ref.height}` : '')
+      : [
+          ref.durationSec !== undefined ? ` ${ref.durationSec.toFixed(1)}s` : '',
+          ref.width && ref.height ? ` ${ref.width}x${ref.height}` : '',
+        ].join('');
+    lines.push(`${index + 1}. ${ref.relPath} (${ref.type}${dims})`);
+  });
+  return lines.join('\n');
+}
+
 function extractRunConfigAttachments(runConfig?: ChatModelRunOptions['runConfig']): AttachmentDescriptor[] {
   const custom = runConfig?.custom;
   if (!custom || typeof custom !== 'object') return [];
@@ -323,11 +389,12 @@ function extractRunConfigAttachments(runConfig?: ChatModelRunOptions['runConfig'
       if (!item || typeof item !== 'object') return null;
       const candidate = item as Partial<AttachmentDescriptor>;
       if (typeof candidate.filePath !== 'string' || !candidate.filePath.trim()) return null;
+      // Omit (not just `undefined`-set) keys — same reasoning as extractRunConfigCanvasRefs.
       return {
-        originalName: typeof candidate.originalName === 'string' ? candidate.originalName : undefined,
+        ...(typeof candidate.originalName === 'string' ? { originalName: candidate.originalName } : {}),
         filePath: candidate.filePath,
-        mimeType: typeof candidate.mimeType === 'string' ? candidate.mimeType : undefined,
-        fileSize: typeof candidate.fileSize === 'number' ? candidate.fileSize : undefined,
+        ...(typeof candidate.mimeType === 'string' ? { mimeType: candidate.mimeType } : {}),
+        ...(typeof candidate.fileSize === 'number' ? { fileSize: candidate.fileSize } : {}),
       };
     })
     .filter((item): item is AttachmentDescriptor => Boolean(item));
@@ -406,6 +473,16 @@ export function stagePendingAttachments(attachments: AttachmentDescriptor[] | nu
   stagedAttachments = attachments && attachments.length > 0 ? attachments : null;
 }
 
+// Canvas Agent (D5/F10) — same side-channel pattern as stagedAttachments above (proven
+// necessary by 返工1's lesson: the assistant-ui runConfig round-trip alone drops custom
+// data before send commits). selection-chips.tsx calls stagePendingCanvasRefs() right
+// before send with whatever's currently selected in canvasStore.
+let stagedCanvasRefs: CanvasRefDescriptor[] | null = null;
+
+export function stagePendingCanvasRefs(refs: CanvasRefDescriptor[] | null | undefined): void {
+  stagedCanvasRefs = refs && refs.length > 0 ? refs : null;
+}
+
 // Local id generator for the assistant message runChat() grows in the store.
 function genMessageId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -464,6 +541,25 @@ function notifySessionInit(sessionId: string): void {
   if (sessionInitCallback) {
     sessionInitCallback(sessionId);
   }
+}
+
+// Canvas Agent (D5): single-callback registration, same pattern as onSessionInit — only
+// one canvas page is ever mounted at a time in a tab, so no pub/sub list needed.
+let canvasEventCallback: ((event: string, payload: unknown) => void) | null = null;
+
+export function onCanvasEvent(callback: (event: string, payload: unknown) => void): () => void {
+  canvasEventCallback = callback;
+  return () => {
+    canvasEventCallback = null;
+  };
+}
+
+export async function subscribeCanvas(canvasId: string): Promise<void> {
+  await send({ type: 'subscribe_canvas', canvasId });
+}
+
+export async function unsubscribeCanvas(canvasId: string): Promise<void> {
+  await send({ type: 'unsubscribe_canvas', canvasId });
 }
 
 export function getSessionId(): string | undefined {
@@ -613,6 +709,14 @@ function getWebSocket(): Promise<WebSocket> {
         // and span tabs. Persistent socket (outside any run).
         if (msg.type === 'running_sessions') {
           useChatSessionStore.getState().setRunningSessionIds(msg.sessionIds);
+          return;
+        }
+
+        // Canvas Agent (D5): asset/task events for the canvas the user is viewing.
+        // Persistent socket, outside any chat run — a canvas image can land from a
+        // DIFFERENT session in the same workspace.
+        if (msg.type === 'canvas_event') {
+          if (canvasEventCallback) canvasEventCallback(msg.event, msg.payload);
           return;
         }
 
@@ -802,8 +906,11 @@ export async function resumeSession(sessionId: string): Promise<void> {
  * Sends create_session message to server, which creates session without user message
  * Returns a promise that resolves when session_init is received
  */
-export async function createSession(projectId?: string): Promise<string> {
-  console.log('[WS Adapter] Creating new session explicitly', projectId ? `(project ${projectId})` : '');
+export async function createSession(projectId?: string, canvasId?: string): Promise<string> {
+  console.log(
+    '[WS Adapter] Creating new session explicitly',
+    projectId ? `(project ${projectId})` : canvasId ? `(canvas ${canvasId})` : ''
+  );
   return new Promise((resolve, reject) => {
     // Set up one-time listener for session_init
     const onInit = (msg: OutboundMessage) => {
@@ -831,7 +938,9 @@ export async function createSession(projectId?: string): Promise<string> {
 
     // Send create_session message. Projects: an optional projectId binds the fresh
     // session to a Project at creation time (race-free), used by "new chat in <project>".
-    send({ type: 'create_session', ...(projectId ? { projectId } : {}) })
+    // Canvas Agent (D5): canvasId is the same idea for a canvas workspace — mutually
+    // exclusive with projectId.
+    send({ type: 'create_session', ...(projectId ? { projectId } : {}), ...(canvasId ? { canvasId } : {}) })
       .catch((err) => {
         cleanup();
         reject(err);
@@ -943,12 +1052,14 @@ const ClaudeAgentWSAdapter: ChatModelAdapter = {
       const attachments = extractRunConfigAttachments(runConfig);
       const selectedSkill = extractRunConfigSkill(runConfig);
       const attachmentsBlock = buildAttachmentsBlock(attachments);
-      const fullPrompt = attachmentsBlock ? `${prompt}\n\n${attachmentsBlock}` : prompt;
-      // 返工1 instrumentation: confirm the 【附件信息】 block actually enters the prompt.
-      // A's bug evidence was server-side "content length: 7" (body only); after the fix
-      // this should show attachments > 0 and a fullPrompt much longer than the raw text.
+      const canvasRefs = extractRunConfigCanvasRefs(runConfig);
+      const canvasRefsBlock = buildCanvasRefsBlock(canvasRefs);
+      const fullPrompt = [prompt, attachmentsBlock, canvasRefsBlock].filter(Boolean).join('\n\n');
+      // 返工1 instrumentation: confirm the 【附件信息】/【画布引用】 blocks actually enter the
+      // prompt. A's bug evidence was server-side "content length: 7" (body only); after the
+      // fix this should show attachments/canvasRefs > 0 and fullPrompt much longer than raw.
       console.log(
-        `[WS Adapter] run: attachments=${attachments.length} promptLen=${prompt.length} fullPromptLen=${fullPrompt.length}`,
+        `[WS Adapter] run: attachments=${attachments.length} canvasRefs=${canvasRefs.length} promptLen=${prompt.length} fullPromptLen=${fullPrompt.length}`,
       );
 
       if (!prompt.trim()) {
@@ -1709,6 +1820,17 @@ export async function runChat(
     console.log('[WS Adapter] runChat: using', stagedAttachments.length, 'staged attachment(s)');
   }
   stagedAttachments = null;
+
+  // Canvas Agent (D5/F10): same override-once pattern as attachments above.
+  if (stagedCanvasRefs && stagedCanvasRefs.length > 0) {
+    const baseCustom = (effectiveRunConfig?.custom ?? {}) as Record<string, unknown>;
+    effectiveRunConfig = {
+      ...(effectiveRunConfig ?? {}),
+      custom: { ...baseCustom, canvasRefs: stagedCanvasRefs },
+    } as ChatModelRunOptions['runConfig'];
+    console.log('[WS Adapter] runChat: using', stagedCanvasRefs.length, 'staged canvas ref(s)');
+  }
+  stagedCanvasRefs = null;
 
   // Synthetic single-message input: the generator only reads the last user
   // message's text for the prompt (SDK keeps conversation context server-side).

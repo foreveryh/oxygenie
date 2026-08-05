@@ -38,6 +38,7 @@ import { ImagePreviewOverlay } from '~/components/claude-chat/overlay/image-prev
 import { type PermissionInfo } from '~/components/claude-chat/permission-badge';
 import { ChatComposerWithRef, type ChatComposerRef } from '~/components/claude-chat/chat-composer';
 import { A2ComposerPanel } from '~/components/claude-chat/a2composer-panel';
+import { SelectionChips } from '~/components/canvas/selection-chips';
 import { ApprovalPrompt } from '~/components/claude-chat/approval-prompt';
 import { WorkbenchDock, useWorkbenchAutoOpen } from '~/components/claude-chat/workbench-panel';
 import { SkillChip } from '~/components/claude-chat/skill-chip';
@@ -197,6 +198,8 @@ export interface ClaudeChatControllerProps {
   urlSessionId?: string | null;
   /** Project context when this chat lives inside a Project (URL-driven). */
   projectId?: string | null;
+  /** Canvas workspace context (Canvas Agent, D5 — mutually exclusive with projectId). */
+  canvasId?: string | null;
   /** Render the controller's own SessionList rail. False when an outer rail is present (e.g. ProjectsRail). */
   showInternalSessionList?: boolean;
   /** New-chat landing (no urlSessionId yet): show a blank composer WITHOUT creating a
@@ -216,9 +219,15 @@ export function ClaudeChatController({
   permissionInfo,
   urlSessionId = null,
   projectId: urlProjectId = null,
+  canvasId = null,
   showInternalSessionList = true,
   newChat = false,
 }: ClaudeChatControllerProps) {
+  // Canvas Agent (D5): canvasId is only ever passed by the canvas route, so it doubles
+  // as the "this is the narrow canvas sidebar, not a full-width chat page" signal —
+  // no separate prop needed. Drives: hide WorkbenchDock (no room, not relevant),
+  // hide the skill quick-suggestion pills (A2ComposerPanel), translucent composer.
+  const canvasMode = !!canvasId;
 
   // Get i18n content - must be at top level before any returns
   const content = useIntlayer('claude-chat');
@@ -387,7 +396,13 @@ export function ClaudeChatController({
       projectQueryClient.invalidateQueries({ queryKey: ['project-sessions'] });
       // Mirror the active session into the URL (deep-linkable, Phase 2 = URL is the truth).
       // In a project → project-chat URL; solo → /agents/c/$id. `replace` so it doesn't spam history.
-      if (urlProjectId) {
+      // Canvas (D5): stays on /agents/canvas/$canvasId — no per-session sub-route in this
+      // slice (one ambient session per workspace), so skip navigation entirely rather than
+      // falling through to the solo /agents/c/$id branch (which would navigate AWAY from
+      // the canvas page).
+      if (canvasId) {
+        // no-op: session tracked in store, URL doesn't need to change
+      } else if (urlProjectId) {
         navigate({
           to: '/agents/projects/$projectId/c/$sessionId',
           params: { projectId: urlProjectId, sessionId },
@@ -398,7 +413,7 @@ export function ClaudeChatController({
       }
     });
     return unsubscribe;
-  }, [setSessionId, invalidateSessions, projectQueryClient, navigate, urlProjectId]);
+  }, [setSessionId, invalidateSessions, projectQueryClient, navigate, urlProjectId, canvasId]);
 
   // Handle WebSocket reconnection - resume current session if any
   useReconnectionRecovery(useCallback(() => {
@@ -476,7 +491,7 @@ export function ClaudeChatController({
         // project at creation (Codex) — avoids a loose session whose URL is later mirrored to a
         // project path (fake binding). Loose "new chat in <project>" still uses the arm.
         const armedProjectId = urlProjectId ?? useChatSessionStore.getState().pendingProjectId;
-        const newSessionId = await createSession(armedProjectId ?? undefined);
+        const newSessionId = await createSession(armedProjectId ?? undefined, canvasId ?? undefined);
         console.log('[Route] New session created:', newSessionId);
         setCurrentSessionId(newSessionId);
         setSessionId(newSessionId);
@@ -635,7 +650,7 @@ export function ClaudeChatController({
         // Capture the armed Project BEFORE the async create so a remount/unmount-clear
         // can't lose it mid-flight. The URL's project wins; loose arm is the fallback.
         const armedProjectId = urlProjectId ?? useChatSessionStore.getState().pendingProjectId;
-        const newSessionId = await createSession(armedProjectId ?? undefined);
+        const newSessionId = await createSession(armedProjectId ?? undefined, canvasId ?? undefined);
         trackClaudeAgentSessionCreated({ sessionId: newSessionId });
         // Fallback bind (idempotent), same as the eager path: ensures the link even if the
         // create-time bind was skipped; a failure degrades gracefully to a loose chat.
@@ -729,6 +744,7 @@ export function ClaudeChatController({
           hideScrollbars={Boolean(activeArtifactId)}
           newChat={newChat}
           ensureSession={ensureSessionForSend}
+          canvasMode={canvasMode}
         />
       </>
     );
@@ -747,9 +763,13 @@ export function ClaudeChatController({
             />
           )}
 
-          {/* Chat Surface - always mounted, width changes based on artifact state */}
+          {/* Chat Surface - always mounted, width changes based on artifact state.
+              min-w-0 + overflow-hidden: without them a flex child's min-content size
+              (e.g. the composer's max-w-3xl) can force this wider than the space
+              actually available — invisible on a full-width page, but bleeds into
+              a narrow sidebar (canvas mode) since nothing was there to clip it. */}
           <div
-            className="h-full shrink-0 relative"
+            className="h-full shrink-0 relative min-w-0 overflow-hidden"
             style={{ flexBasis: 0, flexGrow: activeArtifactId ? artifactSplitRatio : 1 }}
           >
             {chatPanel}
@@ -779,9 +799,9 @@ export function ClaudeChatController({
                 onClose={() => setActiveArtifact(null)}
               />
             </div>
-          ) : (
+          ) : !canvasMode ? (
             <WorkbenchDock currentSessionId={currentSessionId} />
-          )}
+          ) : null}
         </div>
 
       </div>
@@ -829,6 +849,7 @@ export function ClaudeChatController({
               showInternalSessionList={showInternalSessionList}
               newChat={newChat}
               ensureSession={ensureSessionForSend}
+              canvasMode={canvasMode}
             />
           </>
         )}
@@ -907,6 +928,7 @@ const MainContent: FC<{
   showInternalSessionList: boolean;
   newChat: boolean;
   ensureSession: () => Promise<void>;
+  canvasMode: boolean;
 }> = ({
   activeArtifactId,
   artifactSplitRef,
@@ -927,6 +949,7 @@ const MainContent: FC<{
   showInternalSessionList,
   newChat,
   ensureSession,
+  canvasMode,
 }) => {
   const content = useIntlayer('claude-chat');
   const chatPanel = (
@@ -941,6 +964,7 @@ const MainContent: FC<{
         hideScrollbars={Boolean(activeArtifactId)}
         newChat={newChat}
         ensureSession={ensureSession}
+        canvasMode={canvasMode}
       />
     </>
   );
@@ -959,9 +983,12 @@ const MainContent: FC<{
           />
         )}
 
-        {/* Chat Surface - always mounted, width changes based on artifact state */}
+        {/* Chat Surface - always mounted, width changes based on artifact state.
+            min-w-0 + overflow-hidden: see the isDev branch's identical comment above —
+            without them, a flex child's min-content size can force this wider than
+            the space actually available (invisible full-width, bleeds in a sidebar). */}
         <div
-          className="h-full shrink-0 relative"
+          className="h-full shrink-0 relative min-w-0 overflow-hidden"
           style={{ flexBasis: 0, flexGrow: activeArtifactId ? artifactSplitRatio : 1 }}
         >
           {chatPanel}
@@ -991,9 +1018,9 @@ const MainContent: FC<{
               onClose={() => setActiveArtifact(null)}
             />
           </div>
-        ) : (
+        ) : !canvasMode ? (
           <WorkbenchDock currentSessionId={currentSessionId} />
-        )}
+        ) : null}
       </div>
     </>
   );
@@ -1151,6 +1178,7 @@ function ClaudeChatSurface({
   hideScrollbars = false,
   newChat = false,
   ensureSession,
+  canvasMode = false,
 }: {
   permissionInfo: PermissionInfo;
   hasSession: boolean;
@@ -1162,6 +1190,10 @@ function ClaudeChatSurface({
   newChat?: boolean;
   /** Lazy-create hook: called before running a send so the first message creates the session. */
   ensureSession?: () => Promise<void>;
+  /** Canvas Agent (D5): narrow sidebar next to the canvas, not a full-width page —
+   *  hides the skill quick-suggestion pills (not relevant) and gives the composer a
+   *  translucent/floating-over-canvas treatment instead of a hard opaque block. */
+  canvasMode?: boolean;
 }) {
   const content = useIntlayer('claude-chat');
 
@@ -1629,7 +1661,12 @@ function ClaudeChatSurface({
             setEscPressedOnce={setEscPressedOnce}
             escTimeoutRef={escTimeoutRef}
           />
-          <ThreadPrimitive.Root className="flex h-full flex-col items-stretch bg-background p-4 pt-16 font-sans">
+          <ThreadPrimitive.Root
+            className={cn(
+              'flex h-full flex-col items-stretch p-4 pt-16 font-sans',
+              canvasMode ? 'bg-background/90 backdrop-blur-sm' : 'bg-background'
+            )}
+          >
             <ThreadPrimitive.Viewport
               className={cn(
                 'flex-1 min-h-0 overflow-y-auto',
@@ -1731,20 +1768,28 @@ function ClaudeChatSurface({
               <>
                 {/* Ask-mode HITL: tool-approval prompts above the composer */}
                 <ApprovalPrompt />
-                <div className={`mb-3 ${isSkillsPanelOpen ? 'hidden' : ''}`}>
-                  <A2ComposerPanel
-                    key={a2ComposerKey}
-                    composerText={composerText}
-                    onSetComposerText={handleSetComposerText}
-                    onReset={handleA2ComposerReset}
-                    onOpenChange={handleA2ComposerOpenChange}
-                    onSkillSelect={handleSelectSkill}
-                    onOpenNewConversation={onStartSession}
-                  />
-                </div>
+                {/* Canvas mode (D5): skill quick-suggestion pills aren't relevant to a
+                    canvas workflow (image/video generation, not code skills) — skip. */}
+                {!canvasMode && (
+                  <div className={`mb-3 ${isSkillsPanelOpen ? 'hidden' : ''}`}>
+                    <A2ComposerPanel
+                      key={a2ComposerKey}
+                      composerText={composerText}
+                      onSetComposerText={handleSetComposerText}
+                      onReset={handleA2ComposerReset}
+                      onOpenChange={handleA2ComposerOpenChange}
+                      onSkillSelect={handleSelectSkill}
+                      onOpenNewConversation={onStartSession}
+                    />
+                  </div>
+                )}
 
                 {/* Projects C#2 (图1): viewing a session you don't own → replying branches. */}
                 {branchInfo.isViewingNonOwned && <BranchReplyBanner className="mb-2" />}
+
+                {/* Canvas Agent (D5/F10.2): selected-asset chips, self-contained (reads
+                    canvasStore directly — see selection-chips.tsx). */}
+                {canvasMode && <SelectionChips />}
 
                 <ChatComposerWithRef
                   composerRef={composerRef}
@@ -1768,6 +1813,7 @@ function ClaudeChatSurface({
                   onClearSelectedSkill={handleClearSelectedSkill}
                   onSkillSelect={handleSelectSkill}
                   onAttachmentsPersisted={reloadAttachments}
+                  canvasMode={canvasMode}
                 />
               </>
             )}

@@ -130,6 +130,9 @@ test-advanced-features-results.json
 # S5 load-test output (local results, never committed)
 loadtest-results/
 
+# Eval Harness report output (local, never committed — see docs/4. PRD/2026-07-07)
+eval-reports/
+
 # Cloudflare Tunnel: per-deploy config (holds your tunnel id) + the secret credentials.
 # Both are generated from your tunnel token — commit only config.yml.example.
 infra/tunnel/credentials.json

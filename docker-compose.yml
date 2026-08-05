@@ -278,6 +278,7 @@ services:
       # Internal URL for server-side API calls (inside container)
       BETTER_AUTH_INTERNAL_URL: http://localhost:5000
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?}
+      ENABLE_EMAIL_VERIFICATION: ${ENABLE_EMAIL_VERIFICATION:-false}
       # RAG master switch — default OFF (main ships RAG dark); see src/server/rag/flag.ts
       RAG_ENABLED: ${RAG_ENABLED:-}
       # Zhipu key — GLM image tool + Zhipu MCP servers + RAG embedding/rerank (R0)

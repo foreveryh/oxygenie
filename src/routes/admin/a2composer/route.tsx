@@ -4,7 +4,7 @@ import { createFileRoute } from '@tanstack/react-router';
 import { toLocalizedString } from '~/lib/utils';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useServerFn } from '@tanstack/react-start';
-import { Check } from 'lucide-react';
+import { AlertTriangle, Check } from 'lucide-react';
 import { toast } from 'sonner';
 import { requireSystemAdmin } from '~/server/admin.server';
 import {
@@ -21,6 +21,7 @@ import { Input } from '~/components/ui/input';
 import { Textarea } from '~/components/ui/textarea';
 import { Badge } from '~/components/ui/badge';
 import { Switch } from '~/components/ui/switch';
+import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
 import {
   Dialog,
   DialogContent,
@@ -482,6 +483,14 @@ function A2ComposerAdminPage() {
           {isSaving ? '保存中...' : '保存所有更改'}
         </Button>
       </div>
+
+      <Alert variant="warning">
+        <AlertTriangle className="h-4 w-4" />
+        <AlertTitle>此模板库当前不被对话端读取</AlertTitle>
+        <AlertDescription>
+          对话端快捷入口已派生自技能目录。此页保留供未来 per-skill override 模板功能使用。
+        </AlertDescription>
+      </Alert>
 
       <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
         <DialogContent>

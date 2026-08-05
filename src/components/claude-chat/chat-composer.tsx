@@ -49,15 +49,16 @@ import { ModelPicker } from './model-picker';
 import { ToolbarStatus, type AgentStatusType } from './claude-status';
 import { McpStatusIndicator } from './mcp-status-indicator';
 import { useIntlayer } from 'react-intlayer';
-import { toLocalizedString } from '~/lib/utils';
+import { cn, toLocalizedString } from '~/lib/utils';
 import { useMessageAttachments, type PendingAttachment } from '~/lib/utils/message-attachments';
 import { useWorkspaceUploads, type UploadItem } from '~/lib/hooks/use-workspace-uploads';
 import { formatBytes } from '~/lib/upload-limits';
 import { useChatSessionStore } from '~/lib/chat-session-store';
 import { useDraftAutoSave } from '~/lib/hooks/use-session-protection';
 import { buildSkillMarker, injectSkillMarker } from '~/lib/skills/skill-marker';
-import { stagePendingAttachments } from '~/claude/adapters';
+import { stagePendingAttachments, stagePendingCanvasRefs, type CanvasRefDescriptor } from '~/claude/adapters';
 import { trackClaudeAgentQuerySent } from '~/lib/observability/posthog-events';
+import { useCanvasStore } from '~/components/canvas/canvas-store';
 
 /**
  * Props for ChatComposer component
@@ -105,6 +106,17 @@ export interface ChatComposerProps {
   /** Called after a sent message's attachments are persisted (so the thread can
    *  refresh and show the file chip live, not only after a session switch). */
   onAttachmentsPersisted?: () => void;
+  /** Canvas Agent (D5): narrow sidebar, not a full-width page. Drives:
+   *  - translucent/backdrop-blur background instead of solid `bg-card` (same
+   *    `bg-card/NN backdrop-blur-sm` convention as a2composer-panel.tsx's bucket bar
+   *    and this file's own attachment-remove button);
+   *  - hides Workspace/Session-Files/Session-Info buttons: the latter two dispatch to
+   *    WorkbenchDock tabs, and WorkbenchDock isn't mounted in canvas mode (see
+   *    claude-chat-controller.tsx's `!canvasMode && <WorkbenchDock/>`) — showing them
+   *    would be dead clicks. Also just frees up width: at ~380px the full button row
+   *    (model picker + 3 panel toggles + permission tier + mcp status + send) doesn't
+   *    fit and visibly overflows past the composer's rounded border. */
+  canvasMode?: boolean;
 }
 
 /**
@@ -147,6 +159,7 @@ export function ChatComposer({
   onClearSelectedSkill,
   onSkillSelect,
   onAttachmentsPersisted,
+  canvasMode = false,
 }: ChatComposerProps) {
   const content = useIntlayer('claude-chat');
   const api = useAssistantApi();
@@ -154,10 +167,50 @@ export function ChatComposer({
   // (会话文件→Files, info→Context), instead of separate popovers — one place, the
   // workbench owns it. Shared store because the workbench is a far-apart sibling here.
   const openWorkbenchTab = useWorkbenchUI((s) => s.openTab);
+  // Canvas Agent (D5/F10): always call the hook (rules of hooks), but only ACT on it
+  // when canvasMode — canvasStore is a global singleton, so on a non-canvas page this
+  // could carry stale state from a prior canvas visit if we didn't gate on canvasMode
+  // explicitly at every use site below.
+  const canvasSelectedAssetIds = useCanvasStore((s) => s.selectedAssetIds);
+  const canvasAssets = useCanvasStore((s) => s.assets);
+  const setCanvasSelectedAssetIds = useCanvasStore((s) => s.setSelectedAssetIds);
+  const pendingComposerCommand = useCanvasStore((s) => s.pendingComposerCommand);
+  const setPendingComposerCommand = useCanvasStore((s) => s.setPendingComposerCommand);
   const composerText = useAssistantState(({ composer }) => composer.text);
   const composerRunConfig = useAssistantState(({ composer }) => composer.runConfig);
   const composerIsEditing = useAssistantState(({ composer }) => composer.isEditing);
   const isRunning = useThread((state) => state.isRunning);
+
+  // F5.1/F4.x (Animate button, in-place mini composer): consume a cross-tree command
+  // from node-toolbar.tsx (see canvas-store.ts's pendingComposerCommand doc). Builds
+  // canvas refs directly from the command's assetIds — deliberately does NOT go
+  // through canvasSelectedAssetIds/handleSend's own staging block, since that reads
+  // reactive state that may not have settled yet if a caller just also changed the
+  // selection in the same tick (a plain useEffect firing post-commit sidesteps that
+  // race entirely, at the cost of a small duplication of the refs-building logic).
+  useEffect(() => {
+    if (!canvasMode || !pendingComposerCommand) return;
+    if (isRunning) return; // re-fires once isRunning flips back to false — command stays staged
+    const { assetIds, text } = pendingComposerCommand;
+    const refs: CanvasRefDescriptor[] = assetIds
+      .map((id) => canvasAssets[id])
+      .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video' || a.type === 'audio' || a.type === 'text') && !!a.relPath)
+      .map((a) => ({
+        relPath: a.relPath as string,
+        type: a.type as 'image' | 'video' | 'audio' | 'text',
+        width: a.width,
+        height: a.height,
+        ...((a.type === 'video' || a.type === 'audio') && a.meta?.durationSec !== undefined ? { durationSec: a.meta.durationSec } : {}),
+        ...(a.type === 'text' ? { content: a.meta?.text?.content ?? '' } : {}),
+      }));
+    stagePendingCanvasRefs(refs.length > 0 ? refs : null);
+    setCanvasSelectedAssetIds([]);
+    setPendingComposerCommand(null);
+    api.composer().setText(text);
+    onSend?.();
+    queueMicrotask(() => api.composer().send());
+  }, [canvasMode, pendingComposerCommand, isRunning, canvasAssets, api, setCanvasSelectedAssetIds, setPendingComposerCommand, onSend]);
+
   // Persist attachments against the SAME message list the thread renders from
   // (the chat-session store, whose user-message id is minted in route `onNew`).
   // The assistant-ui runtime thread (`useThread`) mints a *different* id, so
@@ -429,6 +482,26 @@ export function ChatComposer({
         console.log('[Composer] staging', pendingAttachments.length, 'attachment(s) for send:', pendingAttachments.map((a) => a.filePath));
       }
       stagePendingAttachments(pendingAttachments);
+      // Canvas Agent (D5/F10.2): same side-channel, gated on canvasMode so a stale
+      // selection from a prior canvas visit never leaks into a non-canvas send.
+      if (canvasMode && canvasSelectedAssetIds.length > 0) {
+        const refs: CanvasRefDescriptor[] = canvasSelectedAssetIds
+          .map((id) => canvasAssets[id])
+          .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video' || a.type === 'audio' || a.type === 'text') && !!a.relPath)
+          .map((a) => ({
+            relPath: a.relPath as string,
+            type: a.type as 'image' | 'video' | 'audio' | 'text',
+            width: a.width,
+            height: a.height,
+            ...((a.type === 'video' || a.type === 'audio') && a.meta?.durationSec !== undefined ? { durationSec: a.meta.durationSec } : {}),
+            ...(a.type === 'text' ? { content: a.meta?.text?.content ?? '' } : {}),
+          }));
+        stagePendingCanvasRefs(refs);
+        // 发送后清空选中 (impl spec §6.3, matches the reference product's behavior).
+        setCanvasSelectedAssetIds([]);
+      } else {
+        stagePendingCanvasRefs(null);
+      }
       api.composer().send();
       if (Object.prototype.hasOwnProperty.call(baseCustom, 'attachments') || Object.prototype.hasOwnProperty.call(baseCustom, 'skill')) {
         api.composer().setRunConfig({
@@ -450,13 +523,16 @@ export function ChatComposer({
     }
 
     sendNow();
-  }, [api, canSend, composerHasText, isRunning, readyAttachments, currentSessionId, onSend, composerRunConfig, composerText, selectedSkill]);
+  }, [api, canSend, composerHasText, isRunning, readyAttachments, currentSessionId, onSend, composerRunConfig, composerText, selectedSkill, canvasMode, canvasSelectedAssetIds, canvasAssets, setCanvasSelectedAssetIds]);
 
   return (
     <ComposerPrimitive.Root
       data-composer-root="true"
       data-dragging={isDragging || undefined}
-      className="relative z-30 shrink-0 mx-auto flex w-full max-w-3xl flex-col overflow-visible rounded-2xl border border-border/70 bg-card p-0.5 shadow-md transition-shadow duration-200 focus-within:shadow-lg hover:shadow-lg data-[dragging]:border-primary data-[dragging]:ring-2 data-[dragging]:ring-primary/40"
+      className={cn(
+        'relative z-30 shrink-0 mx-auto flex w-full max-w-3xl flex-col overflow-visible rounded-2xl border border-border/70 p-0.5 shadow-md transition-shadow duration-200 focus-within:shadow-lg hover:shadow-lg data-[dragging]:border-primary data-[dragging]:ring-2 data-[dragging]:ring-primary/40',
+        canvasMode ? 'bg-card/90 backdrop-blur-sm' : 'bg-card'
+      )}
       onSubmit={handleSend}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -532,8 +608,10 @@ export function ChatComposer({
             {/* Model picker (multi-model) - only show when not running */}
             {!isRunning && <ModelPicker />}
 
-            {/* Workspace Toggle Button - only show when not running */}
-            {!isRunning && (
+            {/* Workspace Toggle Button - only show when not running. Hidden in canvas
+                mode: not core to an image-gen workflow, and frees width (see canvasMode
+                doc comment on ChatComposerProps). */}
+            {!isRunning && !canvasMode && (
               <div className="relative">
                 <button
                   type="button"
@@ -571,8 +649,10 @@ export function ChatComposer({
               </div>
             )}
 
-            {/* Session Files Button - only show when not running */}
-            {!isRunning && (
+            {/* Session Files Button - only show when not running. Hidden in canvas mode:
+                it opens a WorkbenchDock tab, and WorkbenchDock isn't mounted there (see
+                claude-chat-controller.tsx) — showing this button would be a dead click. */}
+            {!isRunning && !canvasMode && (
               <div className="relative">
                 <button
                   type="button"
@@ -589,8 +669,9 @@ export function ChatComposer({
 
             {/* Session Info → opens the workbench Context tab (model · capabilities ·
                 tokens) — same content as the old popover, now unified + always clickable
-                (gated only on having a session, not on sessionMetadata being loaded). */}
-            {!isRunning && (
+                (gated only on having a session, not on sessionMetadata being loaded).
+                Hidden in canvas mode for the same reason as Session Files above. */}
+            {!isRunning && !canvasMode && (
               <button
                 type="button"
                 onClick={() => void withSession(() => openWorkbenchTab('context'))}

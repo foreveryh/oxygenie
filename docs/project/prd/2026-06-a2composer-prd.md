@@ -165,7 +165,7 @@
 - **P0｜接线 + 派生（最小可用）**：分类来自技能 `category`；卡片来自技能元数据；选中＝`ensureSkillEnabled(slug)` + 填 `firstTaskZh`。删 `config.ts` 手写分类/模板对 UI 的依赖（`A2_TEMPLATES` 退为可选 override）。修 F1/F2/F3。
 - **P1｜引导输入 + 风险护栏**：有 schema 展开变量表单；`riskNotesZh` 启用前提示（K7）。
 - **P2｜DS 视觉**：emoji→lucide、胶囊编辑风（K8），与首页/composer 一致。
-- **P3｜admin override + 开关**：`/admin/a2composer` 改为「给某技能写可选 override 模板」；feature flag（K9）。
+- **P3｜admin override + 开关**：`/admin/a2composer` 改为「给某技能写可选 override 模板」；feature flag（K9）。状态注记（2026-07-08）：P3 尚未实施，当前 admin 入口已从导航移除；直达页仅保留未来 override 的提示与存量编辑能力。
 - **P4（backlog）**：按 `recommendationTags`/`level` 二级筛选、最近使用、按当前对话上下文智能推荐技能。
 
 > 依赖：P0 依赖 skills 执行层（启用→物化、目录 DB 为真相）已就绪到「能 `ensureSkillEnabled` 任意精选 slug」。需先确认该前置（skills-integration PRD 的 S2 执行层状态）。

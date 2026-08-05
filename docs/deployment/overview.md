@@ -28,14 +28,17 @@ reverse proxy / TLS / DNS**:
   Docker if missing, generates secrets, prompts only for what can't be auto-generated,
   **pulls the prebuilt GHCR images**, and brings up `docker-compose.prod.yml` behind a
   **bundled Traefik** with **Let's Encrypt** (DNS-01 via Cloudflare → wildcard cert). You
-  bring a domain + a wildcard DNS record (for previews).
-- **Path B** also bundles its own Traefik (like A) but adds a **`cloudflared`** container that
-  opens an *outbound* tunnel to Cloudflare — so the host needs **no public IP and no open
-  ports**. Cloudflare terminates TLS at the edge and forwards both the app host and every
-  preview subdomain to the bundled Traefik. Ideal for a Mac / workstation or anything behind
-  NAT, and gives the **full** feature set (preview + sandbox) — a self-managed host grants the
-  elevated container privileges (`seccomp`/`apparmor=unconfined`, `NET_ADMIN`) that a hardened
-  managed PaaS may restrict.
+  bring a domain + a wildcard DNS record (for previews). The installer treats a trusted
+  HTTPS certificate as part of success, so DNS-01 failures do not look like a good deploy.
+- **Path B** is driven by `scripts/install-tunnel.sh`: it generates the production env,
+  decodes a Cloudflare Tunnel token into `infra/tunnel/`, pulls the prebuilt GHCR images, and
+  starts `docker-compose.tunnel.yml`. It bundles Traefik (like A) plus a **`cloudflared`**
+  container that opens an *outbound* tunnel to Cloudflare — so the host needs **no public IP and
+  no open ports**. Cloudflare terminates TLS at the edge and forwards both the app host and every
+  preview subdomain to the bundled Traefik. Ideal for a Mac / workstation or anything behind NAT,
+  and gives the **full** feature set (preview + sandbox) — a self-managed host grants the elevated
+  container privileges (`seccomp`/`apparmor=unconfined`, `NET_ADMIN`) that a hardened managed PaaS
+  may restrict.
 
 > **Online auto-update.** Once a stack is running, an **admin** sees an **update** entry in
 > the sidebar when a newer image is published. One click runs the full apply pipeline — pull →
@@ -90,7 +93,7 @@ tears down preview containers via the Docker API (plain `docker`, no Swarm).
 
 - **Path A — [VPS one-command install](../../scripts/install-vps.sh)** ← start here if you're
   self-hosting on a public-IP box. Background + manual variant: [docker-compose.md](docker-compose.md).
-- **Path B — [Cloudflare Tunnel](tunnel.md)** ← Mac / workstation / home server / behind NAT.
+- **Path B — [Cloudflare Tunnel one-command install](tunnel.md)** ← Mac / workstation / home server / behind NAT.
   - **[Mac mini, from scratch](mac-mini.md)** ← a complete, linear recipe for Path B on a
     fresh Apple-Silicon Mac (day-2 operations).
 - **Legacy — [Dokploy](dokploy.md)** ← kept for reference; not the production path.
@@ -98,7 +101,10 @@ tears down preview containers via the Docker API (plain `docker`, no Swarm).
 ## Common requirements
 
 - A Linux host (Path A) or a Mac / workstation (Path B) with Docker + the Compose plugin.
-- A domain you control + DNS access (Cloudflare etc.) for the app host and the preview wildcard.
+- A domain you control + DNS access for the app host and the preview wildcard.
+  - Path A needs a Cloudflare DNS API token with Zone:Read + DNS:Edit for Let's Encrypt DNS-01.
+  - Path B needs a Cloudflare Tunnel token. If you use Cloudflare Universal SSL on a full zone,
+    choose a hostname/certificate plan that covers both `APP_HOSTNAME` and `*.APP_HOSTNAME`.
 - Secrets: Postgres/MinIO/Meili passwords, `BETTER_AUTH_SECRET`, and an LLM gateway key
-  (ARK `ANTHROPIC_AUTH_TOKEN` by default). The VPS installer auto-generates the datastore/auth
-  secrets; see each guide's env section.
+  (ARK `ANTHROPIC_AUTH_TOKEN` by default). The installers auto-generate datastore/auth secrets,
+  `KIN_SECRET_KEY`, `UPDATER_TOKEN`, and the model registry seed; see each guide's env section.
