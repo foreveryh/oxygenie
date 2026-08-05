@@ -17,6 +17,7 @@ import { useCanvasStore } from './canvas-store';
 import { useCanvasChannel } from './use-canvas-channel';
 import { ImageNode, type ImageNodeData } from './nodes/image-node';
 import { VideoNode, type VideoNodeData } from './nodes/video-node';
+import { AudioNode, type AudioNodeData } from './nodes/audio-node';
 import { TextNode, type TextNodeData } from './nodes/text-node';
 import { PlaceholderNode, type PlaceholderNodeData } from './nodes/placeholder-node';
 import { CanvasNodeToolbar } from './nodes/node-toolbar';
@@ -24,8 +25,8 @@ import { CanvasToolbar } from './canvas-toolbar';
 import { DirectGenBar } from './direct-gen-bar';
 import { updateAssetPos, createTextNode, type CanvasAssetDTO } from '~/server/function/canvas.server';
 
-const nodeTypes = { image: ImageNode, video: VideoNode, text: TextNode, placeholder: PlaceholderNode };
-const DRAGGABLE_ASSET_TYPES = new Set(['image', 'video', 'text']);
+const nodeTypes = { image: ImageNode, video: VideoNode, audio: AudioNode, text: TextNode, placeholder: PlaceholderNode };
+const DRAGGABLE_ASSET_TYPES = new Set(['image', 'video', 'audio', 'text']);
 const POS_DEBOUNCE_MS = 300; // impl spec §5.6/§6.4: debounce position persistence
 
 interface CanvasRootProps {
@@ -118,7 +119,25 @@ export function CanvasRoot({ canvasId, initialAssets }: CanvasRootProps) {
     const assetNodes: Node[] = Object.values(assets)
       .filter((a): a is typeof a & { relPath: string } => DRAGGABLE_ASSET_TYPES.has(a.type) && !!a.relPath)
       .map((a) =>
-        a.type === 'video'
+        a.type === 'audio'
+          ? {
+              id: a.id,
+              type: 'audio',
+              position: { x: a.posX, y: a.posY },
+              width: a.width,
+              height: a.height,
+              data: {
+                canvasId,
+                relPath: a.relPath,
+                width: a.width,
+                height: a.height,
+                durationSec: a.meta?.durationSec,
+              } satisfies AudioNodeData,
+              draggable: true,
+              selectable: true,
+              selected: selectedAssetIds.includes(a.id),
+            }
+          : a.type === 'video'
           ? {
               id: a.id,
               type: 'video',

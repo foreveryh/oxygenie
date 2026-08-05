@@ -16,8 +16,8 @@ import { createPathSecurity } from './src/claude/path-security.js';
 import { resolveMcpServerConfigs } from './src/claude/mcp/manager.js';
 import { runPython } from './src/claude/python/runner.js';
 import { generateImage } from './src/claude/glm-image/runner.js';
-import { generateImage as generateGeminiImage } from './src/claude/media-gen/gemini-image-runner.js';
-import { generateVideo as generateGeminiVideo } from './src/claude/media-gen/gemini-video-runner.js';
+import { generateMedia, mediaRouteFromEnv } from './src/claude/media-gen/adapter-registry.js';
+import { validateMediaInput } from './src/claude/media-gen/media-capabilities.js';
 import { runBash } from './src/claude/bash/runner.js';
 import { ensureSandbox, sandboxStatus } from './src/claude/execution/sandbox.js';
 import { getExecutionRuntime } from './src/claude/execution/index.js';
@@ -548,7 +548,7 @@ async function startRun(request) {
     // "result" after, so ws-server can show a Generating placeholder in between.
     const mediaGenGenerateImageTool = tool(
       'generate_image',
-      'Generate one or more images with Gemini Imagen. Images automatically appear on ' +
+      'Generate one or more images with the configured image model. Images automatically appear on ' +
       "the user's canvas — do not mention file paths, just describe what you generated.",
       {
         prompt: z.string().min(1).describe('Image generation prompt (required)'),
@@ -557,17 +557,22 @@ async function startRun(request) {
       },
       async (args) => {
         const toolUseId = crypto.randomUUID();
+        const route = mediaRouteFromEnv('image');
         writeFrame({
           type: 'media_gen_task_started',
           toolUseId,
           kind: 't2i',
+          modelSlug: route?.id,
           input: { prompt: args.prompt, count: args.count ?? 1, aspect: args.aspect ?? '1:1' },
         });
         try {
-          const result = await generateGeminiImage({
-            prompt: args.prompt,
-            count: args.count,
-            aspect: args.aspect,
+          if (!route) throw new Error('No image generation model is configured');
+          const input = { prompt: args.prompt, count: args.count, aspect: args.aspect };
+          validateMediaInput({ capability: 'image', route, input });
+          const result = await generateMedia({
+            capability: 'image',
+            route,
+            input,
             outputDir: config.cwd,
           });
           writeFrame({ type: 'media_gen_task_result', toolUseId, isError: false, files: result.files });
@@ -587,44 +592,80 @@ async function startRun(request) {
       }
     );
 
-    // mcp__media-gen__generate_video — same started/result frame pattern as
-    // generate_image. `imageRelPath` (an existing canvas asset filename, e.g. from
-    // `ls`) makes this do image-to-video (Animate, PRD F5) instead of text-to-video;
-    // omit it for a plain text-to-video generation.
+    // Provider-neutral modes and semantic reference roles. imageRelPath remains as
+    // the legacy one-frame shortcut used by the existing Animate action.
     const mediaGenGenerateVideoTool = tool(
       'generate_video',
-      'Generate a video with Gemini Veo. Videos automatically appear on ' +
+      'Generate a video with the configured video model. Videos automatically appear on ' +
       "the user's canvas — do not mention file paths, just describe what you generated. " +
-      'Pass imageRelPath (an existing canvas image asset filename) to animate that image ' +
-      'instead of generating from the prompt alone.',
+      'Use references with semantic roles when the configured model supports first/last frames or reference media.',
       {
         prompt: z.string().min(1).describe('Video generation / motion prompt (required)'),
         imageRelPath: z.string().optional().describe('Existing canvas image asset filename to animate (image-to-video)'),
-        aspect: z.enum(['16:9', '9:16']).optional().describe('Aspect ratio (default 16:9)'),
-        durationSeconds: z.union([z.literal(4), z.literal(6), z.literal(8)]).optional().describe('Video length in seconds (default 8)'),
-        resolution: z.enum(['720p', '1080p']).optional().describe('Video resolution (default 720p)'),
+        mode: z.enum(['text_to_video', 'first_last_frame', 'reference', 'video_edit']).optional(),
+        references: z.array(z.object({
+          relPath: z.string().min(1),
+          role: z.enum(['first_frame', 'last_frame', 'reference_image', 'reference_video', 'reference_audio', 'edit_source']),
+        })).max(15).optional().describe('Canvas media paths and their role in this generation'),
+        // The model-specific constraint manifest validates these at runtime. Keeping
+        // the tool schema broad lets future models expose values such as H3's 2K/15s
+        // without a worker-code release.
+        aspect: z.string().max(16).optional().describe('Aspect ratio supported by the configured model'),
+        durationSeconds: z.number().int().min(1).max(3600).optional().describe('Video length supported by the configured model'),
+        resolution: z.string().max(16).optional().describe('Video resolution supported by the configured model'),
       },
       async (args) => {
         const toolUseId = crypto.randomUUID();
+        const route = mediaRouteFromEnv('video');
+        const requestedReferences = args.references?.length
+          ? args.references
+          : args.imageRelPath ? [{ relPath: args.imageRelPath, role: 'first_frame' }] : [];
+        const mediaTypeForRole = (role) => role === 'reference_video' || role === 'edit_source'
+          ? 'video'
+          : role === 'reference_audio' ? 'audio' : 'image';
+        const references = requestedReferences.map((reference, order) => {
+          const root = path.resolve(config.cwd);
+          const fullPath = path.resolve(root, reference.relPath);
+          if (fullPath !== root && !fullPath.startsWith(`${root}${path.sep}`)) {
+            throw new Error('Reference path must stay inside the canvas workspace');
+          }
+          return { path: fullPath, mediaType: mediaTypeForRole(reference.role), role: reference.role, order };
+        });
+        const effectiveMode = args.mode
+          || (references.some((reference) => reference.role.startsWith('reference_')) ? 'reference'
+            : references.length ? 'first_last_frame' : 'text_to_video');
+        const kind = references.some((reference) => reference.mediaType === 'video')
+          ? 'v2v' : references.some((reference) => reference.mediaType === 'image') ? 'i2v' : 't2v';
         writeFrame({
           type: 'media_gen_task_started',
           toolUseId,
-          kind: args.imageRelPath ? 'i2v' : 't2v',
+          kind,
+          modelSlug: route?.id,
           input: {
             prompt: args.prompt,
-            aspect: args.aspect ?? '16:9',
-            durationSeconds: args.durationSeconds ?? 8,
-            resolution: args.resolution ?? '720p',
+            mode: effectiveMode,
+            ...(args.aspect ? { aspect: args.aspect } : {}),
+            ...(args.durationSeconds ? { durationSeconds: args.durationSeconds } : {}),
+            ...(args.resolution ? { resolution: args.resolution } : {}),
           },
         });
         try {
-          const imagePath = args.imageRelPath ? path.join(config.cwd, args.imageRelPath) : undefined;
-          const result = await generateGeminiVideo({
+          if (!route) throw new Error('No video generation model is configured');
+          const input = {
             prompt: args.prompt,
-            imagePath,
+            mode: effectiveMode,
+            references,
+            imagePath: references.find((reference) => reference.role === 'first_frame')?.path,
+            lastImagePath: references.find((reference) => reference.role === 'last_frame')?.path,
             aspect: args.aspect,
             durationSeconds: args.durationSeconds,
             resolution: args.resolution,
+          };
+          validateMediaInput({ capability: 'video', route, input });
+          const result = await generateMedia({
+            capability: 'video',
+            route,
+            input,
             outputDir: config.cwd,
           });
           writeFrame({ type: 'media_gen_task_result', toolUseId, isError: false, files: result.files });
@@ -971,9 +1012,10 @@ automatically appear on the user's canvas (a visual board, not just this chat).
   1-4, optional aspect ratio). The image(s) will appear on the canvas — do not mention
   file paths or say "saved to X"; just describe what you generated.
 - To generate a video, call \`mcp__media-gen__generate_video\` (prompt, optional
-  imageRelPath to animate an existing canvas image instead of generating from prompt
-  alone, optional aspect/durationSeconds/resolution). Video generation takes 1-3
-  minutes — mention that it's in progress rather than going silent.
+  provider-neutral mode/references with semantic roles, optional
+  aspect/durationSeconds/resolution). imageRelPath remains a first-frame shortcut.
+  Video generation takes 1-3 minutes — mention that it's in progress rather than
+  going silent.
 - Only promise capabilities you actually have. If asked for something you have no tool
   for, say so plainly rather than pretending to have done it.
 ` : '';

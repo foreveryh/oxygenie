@@ -101,21 +101,18 @@ export function serializeCustomHeaders(headers) {
  * buildMediaGenEnv — request-time provider routing for canvas media-gen (Canvas
  * Agent, D6). Parallel to buildWorkerEnv but protocol-dispatched instead of
  * Anthropic-only: media-gen capabilities (image/video) aren't restricted to one wire
- * protocol the way 'chat' is, so each protocol gets its own tiny branch here — one
- * today (gemini), more as providers are added. Unlike buildWorkerEnv, an unresolved
- * or unrecognized-protocol model is NON-FATAL: returns sourceEnv unchanged so the
+ * protocol the way 'chat' is. It injects a provider-neutral route consumed by the
+ * media adapter registry. Unlike buildWorkerEnv, an unresolved model/credential is
+ * NON-FATAL: returns sourceEnv unchanged so the
  * caller falls back to whatever raw env var (e.g. GEMINI_API_KEY) may already be set,
  * rather than failing the whole canvas session over a media-gen credential.
  *
  * `capability` ('image'|'video') is what makes the SAME connection swappable
  * independently per capability — an admin can point 'image' at one provider/model
  * and 'video' at a completely different one (own connection, own protocol) via
- * /admin/models, without any code change. The gemini branch below sets a
- * capability-specific *_MODEL var (GEMINI_IMAGE_MODEL / GEMINI_VIDEO_MODEL) so image
- * and video resolution never clobber each other when both happen to route through
- * the same Gemini connection, but nothing here assumes video ends up on 'gemini' —
- * a future non-Gemini video provider just adds its own `meta.protocol === '...'`
- * branch and its own env var names, same shape as this one.
+ * /admin/models, without any code change. Every provider gets the same
+ * KIN_MEDIA_{IMAGE|VIDEO}_* route variables. Legacy GEMINI_* variables are also set
+ * for existing standalone callers during the migration.
  *
  * @param {ModelRouteMeta|null|undefined} meta
  * @param {Record<string,string|undefined>} sourceEnv
@@ -135,6 +132,20 @@ export function buildMediaGenEnv(meta, sourceEnv, capability) {
   if (!token || !String(token).trim()) return sourceEnv;
 
   const env = { ...sourceEnv };
+  const prefix = capability === 'video' ? 'KIN_MEDIA_VIDEO' : 'KIN_MEDIA_IMAGE';
+  const inferredAdapter = meta.mediaAdapter ||
+    (meta.protocol === 'gemini' ? (capability === 'video' ? 'google-veo' : 'google-imagen') : 'auto');
+
+  env[`${prefix}_MODEL_ID`] = meta.id || meta.model;
+  env[`${prefix}_ADAPTER`] = inferredAdapter;
+  env[`${prefix}_PROTOCOL`] = meta.protocol || 'custom';
+  env[`${prefix}_MODEL`] = meta.model;
+  env[`${prefix}_BASE_URL`] = meta.baseUrl;
+  env[`${prefix}_AUTH_STYLE`] = meta.authStyle || 'bearer';
+  env[`${prefix}_API_KEY`] = token;
+  env[`${prefix}_CONFIG`] = JSON.stringify(meta.mediaConfig || {});
+  env[`${prefix}_HEADERS`] = JSON.stringify(meta.customHeaders || {});
+
   if (meta.protocol === 'gemini') {
     env.GEMINI_API_KEY = token;
     env.GEMINI_BASE_URL = meta.baseUrl;
@@ -143,9 +154,6 @@ export function buildMediaGenEnv(meta, sourceEnv, capability) {
     } else {
       env.GEMINI_IMAGE_MODEL = meta.model;
     }
-    return env;
   }
-
-  // Unrecognized protocol for media-gen — no runner consumes it yet, leave env as-is.
-  return sourceEnv;
+  return env;
 }

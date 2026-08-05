@@ -14,13 +14,26 @@ import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 
 import { db } from '~/db/db-config';
-import { canvasWorkspace, canvasAsset, generationTask, type CanvasAssetMeta } from '~/db/schema';
+import { canvasWorkspace, canvasAsset, generationTask, modelConnection, modelDefinition, type CanvasAssetMeta } from '~/db/schema';
 import { auth } from '~/server/auth.server';
 import { getCanvasWorkspacePath } from '~/server/canvas/workspace-path';
 import { createGenerationTask } from '~/server/canvas/task-orchestration';
 import { scheduleCanvasGeneration, removeCanvasGenerationJob } from '~/server/canvas/generation-queue';
 import { processCanvasGenerationTask } from '~/server/canvas/generation-processor';
+import { resolveMediaRoute } from '~/server/models/media-route';
+import { resolveMediaCapabilities, validateMediaInput } from '~/claude/media-gen/media-capabilities';
+import { inferMediaAdapter } from '~/claude/media-gen/adapter-registry';
+import { getDefaultModelFor } from '~/server/models/registry';
 import { assertWithinDailyQuota, GenQuotaExceededError } from '~/server/canvas/quota';
+
+const generationReferenceRoleSchema = z.enum([
+  'first_frame',
+  'last_frame',
+  'reference_image',
+  'reference_video',
+  'reference_audio',
+  'edit_source',
+]);
 
 /** D2: text nodes mirror to `notes/{assetId}.md` in the sandbox — this marker line lets
  * a future watcher (or the Agent itself) tell a canvas text note apart from an arbitrary
@@ -54,7 +67,7 @@ export interface CanvasWorkspaceDTO {
 export interface CanvasAssetDTO {
   id: string;
   canvasId: string;
-  type: 'image' | 'video' | 'text';
+  type: 'image' | 'video' | 'audio' | 'text';
   relPath: string | null;
   meta: CanvasAssetMeta;
   posX: number;
@@ -325,6 +338,49 @@ export interface GenerationTaskDTO {
   error: string | null;
 }
 
+/** Public, credential-free constraints for the currently selected media default.
+ * The client renders only these options; directGenerate validates the exact same
+ * contract again before it creates a billable task. */
+export const getMediaGenerationCapabilities = createServerFn({ method: 'GET' })
+  .inputValidator(z.object({ capability: z.enum(['image', 'video']) }))
+  .handler(async ({ data }) => {
+    await requireUser();
+    const defaultModelId = await getDefaultModelFor(data.capability, null);
+    const rows = await db
+      .select({
+        id: modelDefinition.id,
+        label: modelDefinition.label,
+        model: modelDefinition.model,
+        capabilities: modelDefinition.capabilities,
+        mediaAdapter: modelDefinition.mediaAdapter,
+        mediaConfig: modelDefinition.mediaConfig,
+        protocol: modelConnection.protocol,
+      })
+      .from(modelDefinition)
+      .innerJoin(modelConnection, eq(modelDefinition.connectionId, modelConnection.id))
+      .where(eq(modelDefinition.enabled, true));
+
+    const models = rows
+      .filter((row) => row.capabilities.includes(data.capability))
+      .flatMap((row) => {
+        try {
+          const adapter = inferMediaAdapter(
+            { id: row.id, model: row.model, protocol: row.protocol, adapter: row.mediaAdapter },
+            data.capability,
+          );
+          return [{
+            id: row.id,
+            label: row.label,
+            adapter,
+            capabilities: resolveMediaCapabilities({ adapter, config: row.mediaConfig }, data.capability),
+          }];
+        } catch {
+          return [];
+        }
+      });
+    return { defaultModelId, models };
+  });
+
 /**
  * F9.2/9.3/9.5: direct-gen — the manual generation path (parallel to the Agent tool
  * path), queued via bullmq so a minutes-long video call never occupies the request
@@ -336,13 +392,23 @@ export const directGenerate = createServerFn({ method: 'POST' })
   .inputValidator(
     z.object({
       canvasId: z.string().uuid(),
-      kind: z.enum(['t2i', 'i2i', 't2v', 'i2v']),
+      kind: z.enum(['t2i', 'i2i', 't2v', 'i2v', 'v2v']),
       prompt: z.string().min(1).max(2000),
       count: z.number().int().min(1).max(4).optional(),
       aspect: z.string().max(16).optional(),
       resolution: z.string().max(16).optional(),
-      durationSec: z.number().min(1).max(60).optional(),
-      inputAssetIds: z.array(z.string().uuid()).max(4).optional(),
+      // Broad transport guard only; the selected model's capability manifest below
+      // owns the real allowed values (including future long-video models).
+      durationSec: z.number().min(1).max(3600).optional(),
+      // Legacy transport retained for existing callers. New clients send explicit
+      // per-request roles; the server derives mediaType from the canvas asset row.
+      inputAssetIds: z.array(z.string().uuid()).max(15).optional(),
+      mode: z.enum(['text_to_video', 'first_last_frame', 'reference', 'video_edit']).optional(),
+      references: z.array(z.object({
+        assetId: z.string().uuid(),
+        role: generationReferenceRoleSchema,
+      })).max(15).optional(),
+      modelId: z.string().min(1).max(256).optional(),
     })
   )
   .handler(async ({ data }): Promise<{ taskId: string; reservedPositions: { posX: number; posY: number }[] }> => {
@@ -360,21 +426,71 @@ export const directGenerate = createServerFn({ method: 'POST' })
       throw error;
     }
 
+    // Freeze the effective model id when the task is created. A later admin default
+    // change must only affect new work, not reroute an already queued/billable job.
+    const capability = data.kind === 't2i' || data.kind === 'i2i' ? 'image' : 'video';
+    const route = await resolveMediaRoute(capability, data.modelId);
+    const requestedReferences = data.references ?? (data.inputAssetIds || []).map((assetId, index) => ({
+      assetId,
+      role: index === 0 ? 'first_frame' as const : 'last_frame' as const,
+    }));
+    if (new Set(requestedReferences.map((reference) => reference.assetId)).size !== requestedReferences.length) {
+      throw new Error('同一素材不能在一次生成中重复使用');
+    }
+    const referenceIds = requestedReferences.map((reference) => reference.assetId);
+    const referenceRows = referenceIds.length
+      ? await db
+          .select({ id: canvasAsset.id, canvasId: canvasAsset.canvasId, type: canvasAsset.type, meta: canvasAsset.meta, relPath: canvasAsset.relPath })
+          .from(canvasAsset)
+          .where(and(inArray(canvasAsset.id, referenceIds), eq(canvasAsset.canvasId, data.canvasId), isNull(canvasAsset.deletedAt)))
+      : [];
+    const referenceRowsById = new Map(referenceRows.map((row) => [row.id, row]));
+    const references = requestedReferences.map((reference, order) => {
+      const asset = referenceRowsById.get(reference.assetId);
+      if (!asset || !asset.relPath) throw new Error('References 中包含不存在或不可用的画板素材');
+      if (asset.type !== 'image' && asset.type !== 'video' && asset.type !== 'audio') {
+        throw new Error('References 仅支持图片、视频和音频素材');
+      }
+      return {
+        assetId: asset.id,
+        mediaType: asset.type,
+        role: reference.role,
+        order,
+        ...(asset.meta?.durationSec !== undefined ? { durationSec: asset.meta.durationSec } : {}),
+      };
+    });
+    validateMediaInput({
+      capability,
+      route,
+      input: {
+        prompt: data.prompt,
+        aspect: data.aspect,
+        count: data.count,
+        durationSeconds: data.durationSec,
+        resolution: data.resolution,
+        mode: data.mode,
+        references,
+      },
+    });
+
     const { task, reservedPositions } = await createGenerationTask({
       canvasId: data.canvasId,
       origin: 'direct',
       kind: data.kind,
+      modelSlug: route.id,
       params: {
         prompt: data.prompt,
         count: data.count,
         aspect: data.aspect,
         resolution: data.resolution,
         durationSec: data.durationSec,
+        mode: data.mode,
+        references,
       },
     });
 
-    if (data.inputAssetIds?.length) {
-      await db.update(generationTask).set({ inputAssetIds: data.inputAssetIds }).where(eq(generationTask.id, task.id));
+    if (referenceIds.length) {
+      await db.update(generationTask).set({ inputAssetIds: referenceIds }).where(eq(generationTask.id, task.id));
     }
 
     await scheduleCanvasGeneration(task.id, processCanvasGenerationTask);

@@ -1,5 +1,5 @@
 /**
- * Canvas Agent (M3-T1d, F9.5) — upload an image (or video) straight onto the canvas.
+ * Canvas Agent (M3-T1d, F9.5) — upload media straight onto the canvas.
  *
  * POST /api/canvases/:canvasId/upload
  *
@@ -32,6 +32,7 @@ import { assignSlots, fitInSlot } from '~/server/canvas/slot-layout';
 const MAX_UPLOAD_BYTES = CHAT_ATTACH_MAX_BYTES;
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov']);
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
+const AUDIO_EXTS = new Set(['.mp3', '.wav']);
 
 export const Route = createFileRoute('/api/canvases/$canvasId/upload')({
   server: {
@@ -71,10 +72,11 @@ export const Route = createFileRoute('/api/canvases/$canvasId/upload')({
         const ext = path.extname(file.name).toLowerCase();
         const isVideo = VIDEO_EXTS.has(ext);
         const isImage = IMAGE_EXTS.has(ext);
-        if (!isVideo && !isImage) {
+        const isAudio = AUDIO_EXTS.has(ext);
+        if (!isVideo && !isImage && !isAudio) {
           // Passed the general upload-limits allowlist (e.g. a text/doc type) but isn't
           // a canvas media type — F9.5 is image/video upload specifically.
-          return Response.json({ error: '仅支持图片或视频文件' }, { status: 415 });
+          return Response.json({ error: '仅支持图片、视频或 MP3/WAV 音频文件' }, { status: 415 });
         }
 
         const id = randomUUID();
@@ -96,8 +98,8 @@ export const Route = createFileRoute('/api/canvases/$canvasId/upload')({
         // yet — default to a 16:9 landscape box; the <video> element itself renders at
         // its true aspect regardless of the canvas node's box size (video-node.tsx),
         // so this only affects initial slot sizing, not playback correctness.
-        let width = 1280;
-        let height = 720;
+        let width = isAudio ? 640 : 1280;
+        let height = isAudio ? 160 : 720;
         if (isImage) {
           try {
             const meta = await sharp(buffer).metadata();
@@ -122,9 +124,16 @@ export const Route = createFileRoute('/api/canvases/$canvasId/upload')({
           .values({
             id,
             canvasId,
-            type: isVideo ? 'video' : 'image',
+            type: isVideo ? 'video' : isAudio ? 'audio' : 'image',
             relPath,
-            meta: { width, height, origin: 'upload' },
+            meta: {
+              width,
+              height,
+              origin: 'upload',
+              ...(Number.isFinite(Number(formData.get('durationSec'))) && Number(formData.get('durationSec')) > 0
+                ? { durationSec: Number(formData.get('durationSec')) }
+                : {}),
+            },
             posX: slot.posX,
             posY: slot.posY,
             width: size.width,

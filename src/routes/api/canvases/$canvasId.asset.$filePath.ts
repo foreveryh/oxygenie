@@ -41,10 +41,13 @@ const CONTENT_TYPE_BY_EXT: Record<string, string> = {
   '.webp': 'image/webp',
   '.mp4': 'video/mp4',
   '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
 };
 
 const RESIZABLE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
-const VIDEO_EXTS = new Set(['.mp4', '.webm']);
+const STREAMABLE_MEDIA_EXTS = new Set(['.mp4', '.webm', '.mov', '.mp3', '.wav']);
 const MAX_THUMB_WIDTH = 1024; // guards against a client requesting an absurd/negative size
 
 function getContentType(filePath: string): string {
@@ -124,7 +127,7 @@ export const Route = createFileRoute('/api/canvases/$canvasId/asset/$filePath')(
           }
 
           const ext = path.extname(filePath).toLowerCase();
-          if (VIDEO_EXTS.has(ext) && !download) {
+          if (STREAMABLE_MEDIA_EXTS.has(ext) && !download) {
             // Range support (M2-T4) — <video> seeking needs 206 partial responses; a
             // full readFile()-into-memory per request (fine for images) doesn't scale
             // to multi-MB/tens-of-MB video files, so this streams only the requested

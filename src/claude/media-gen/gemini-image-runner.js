@@ -37,17 +37,18 @@ const MIME_EXT = {
   'image/jpeg': '.jpg',
 };
 
-async function callImagen({ prompt, count, aspectRatio, model, baseUrl, apiKey }) {
+async function callImagen({ prompt, count, aspectRatio, model, baseUrl, apiKey, customHeaders = {}, providerConfig = {} }) {
   const endpoint = `${baseUrl}/v1beta/models/${model}:predict`;
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-goog-api-key': apiKey,
+      ...customHeaders,
     },
     body: JSON.stringify({
       instances: [{ prompt }],
-      parameters: { sampleCount: count, aspectRatio },
+      parameters: { ...providerConfig, sampleCount: count, aspectRatio },
     }),
   });
 
@@ -74,9 +75,19 @@ async function callImagen({ prompt, count, aspectRatio, model, baseUrl, apiKey }
  * @param {string} [options.model] - explicit override; else env GEMINI_IMAGE_MODEL; else DEFAULT_MODEL
  * @returns {Promise<{ files: Array<{ id: string, relPath: string, width: number, height: number }> }>}
  */
-export async function generateImage({ prompt, count = 1, aspect = '1:1', outputDir, model }) {
+export async function generateImage({
+  prompt,
+  count = 1,
+  aspect = '1:1',
+  outputDir,
+  model,
+  baseUrl: baseUrlOverride,
+  apiKey: apiKeyOverride,
+  customHeaders,
+  providerConfig,
+}) {
   const resolvedModel = model || process.env.GEMINI_IMAGE_MODEL || DEFAULT_MODEL;
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = apiKeyOverride || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY environment variable is required');
   }
@@ -86,9 +97,18 @@ export async function generateImage({ prompt, count = 1, aspect = '1:1', outputD
   const aspectRatio = ASPECT_DIMENSIONS[aspect] ? aspect : '1:1';
   const dims = ASPECT_DIMENSIONS[aspectRatio];
   const sampleCount = Math.min(4, Math.max(1, count));
-  const baseUrl = process.env.GEMINI_BASE_URL || DEFAULT_BASE_URL;
+  const baseUrl = baseUrlOverride || process.env.GEMINI_BASE_URL || DEFAULT_BASE_URL;
 
-  const predictions = await callImagen({ prompt, count: sampleCount, aspectRatio, model: resolvedModel, baseUrl, apiKey });
+  const predictions = await callImagen({
+    prompt,
+    count: sampleCount,
+    aspectRatio,
+    model: resolvedModel,
+    baseUrl,
+    apiKey,
+    customHeaders,
+    providerConfig,
+  });
 
   await fs.mkdir(outputDir, { recursive: true });
 

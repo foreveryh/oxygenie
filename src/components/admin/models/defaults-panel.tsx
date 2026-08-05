@@ -33,7 +33,11 @@ type Props = {
 
 function eligibleModels(models: AdminModelRow[], capability: ModelCapability): AdminModelRow[] {
   return models.filter(
-    (m) => m.enabled && m.capabilities.includes(capability) && (capability !== 'chat' || m.protocol === 'anthropic'),
+    (m) =>
+      m.enabled &&
+      m.capabilities.includes(capability) &&
+      (capability !== 'chat' || m.protocol === 'anthropic') &&
+      (capability !== 'image' && capability !== 'video' || Boolean(m.mediaAdapter) || m.protocol === 'gemini'),
   );
 }
 

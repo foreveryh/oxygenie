@@ -39,6 +39,24 @@ interface CanvasToolbarProps {
   canvasId: string;
 }
 
+async function probeMediaDuration(file: File): Promise<number | undefined> {
+  if (!file.type.startsWith('audio/') && !file.type.startsWith('video/')) return undefined;
+  const url = URL.createObjectURL(file);
+  const media = document.createElement(file.type.startsWith('audio/') ? 'audio' : 'video');
+  try {
+    return await new Promise<number | undefined>((resolve) => {
+      const finish = (value?: number) => { clearTimeout(timer); resolve(value); };
+      const timer = window.setTimeout(() => finish(), 5000);
+      media.preload = 'metadata';
+      media.onloadedmetadata = () => finish(Number.isFinite(media.duration) ? media.duration : undefined);
+      media.onerror = () => finish();
+      media.src = url;
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 /**
  * Canvas Agent (F9.1) — bottom mode-switcher toolbar. Select/Hand/Text arm a canvas
  * interaction mode; Image/Video arm direct-gen-bar.tsx's floating parameter bar
@@ -87,6 +105,8 @@ export function CanvasToolbar({ canvasId }: CanvasToolbarProps) {
       try {
         const formData = new FormData();
         formData.append('file', file);
+        const duration = await probeMediaDuration(file);
+        if (duration !== undefined) formData.append('durationSec', String(duration));
         const response = await fetch(`/api/canvases/${canvasId}/upload`, { method: 'POST', body: formData });
         if (!response.ok) {
           const body = await response.json().catch(() => ({}));
@@ -126,7 +146,7 @@ export function CanvasToolbar({ canvasId }: CanvasToolbarProps) {
         >
           {uploading ? <Loader2 width={17} height={17} className="animate-spin" /> : <Upload width={17} height={17} />}
         </button>
-        <input ref={fileInputRef} type="file" accept="image/*,video/*" className="hidden" onChange={handleFileSelected} />
+        <input ref={fileInputRef} type="file" accept="image/*,video/*,audio/mpeg,audio/wav" className="hidden" onChange={handleFileSelected} />
       </div>
     </div>
   );

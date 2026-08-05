@@ -194,13 +194,13 @@ export function ChatComposer({
     const { assetIds, text } = pendingComposerCommand;
     const refs: CanvasRefDescriptor[] = assetIds
       .map((id) => canvasAssets[id])
-      .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video' || a.type === 'text') && !!a.relPath)
+      .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video' || a.type === 'audio' || a.type === 'text') && !!a.relPath)
       .map((a) => ({
         relPath: a.relPath as string,
-        type: a.type as 'image' | 'video' | 'text',
+        type: a.type as 'image' | 'video' | 'audio' | 'text',
         width: a.width,
         height: a.height,
-        ...(a.type === 'video' && a.meta?.durationSec !== undefined ? { durationSec: a.meta.durationSec } : {}),
+        ...((a.type === 'video' || a.type === 'audio') && a.meta?.durationSec !== undefined ? { durationSec: a.meta.durationSec } : {}),
         ...(a.type === 'text' ? { content: a.meta?.text?.content ?? '' } : {}),
       }));
     stagePendingCanvasRefs(refs.length > 0 ? refs : null);
@@ -487,13 +487,13 @@ export function ChatComposer({
       if (canvasMode && canvasSelectedAssetIds.length > 0) {
         const refs: CanvasRefDescriptor[] = canvasSelectedAssetIds
           .map((id) => canvasAssets[id])
-          .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video' || a.type === 'text') && !!a.relPath)
+          .filter((a): a is NonNullable<typeof a> => Boolean(a) && (a.type === 'image' || a.type === 'video' || a.type === 'audio' || a.type === 'text') && !!a.relPath)
           .map((a) => ({
             relPath: a.relPath as string,
-            type: a.type as 'image' | 'video' | 'text',
+            type: a.type as 'image' | 'video' | 'audio' | 'text',
             width: a.width,
             height: a.height,
-            ...(a.type === 'video' && a.meta?.durationSec !== undefined ? { durationSec: a.meta.durationSec } : {}),
+            ...((a.type === 'video' || a.type === 'audio') && a.meta?.durationSec !== undefined ? { durationSec: a.meta.durationSec } : {}),
             ...(a.type === 'text' ? { content: a.meta?.text?.content ?? '' } : {}),
           }));
         stagePendingCanvasRefs(refs);

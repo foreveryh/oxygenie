@@ -1,6 +1,6 @@
 'use client';
 
-import { X } from 'lucide-react';
+import { Music2, X } from 'lucide-react';
 import { useCanvasStore } from './canvas-store';
 
 /**
@@ -18,7 +18,7 @@ export function SelectionChips() {
 
   const selected = selectedAssetIds
     .map((id) => assets[id])
-    .filter((a) => a && (a.type === 'image' || a.type === 'video' || a.type === 'text'));
+    .filter((a) => a && (a.type === 'image' || a.type === 'video' || a.type === 'audio' || a.type === 'text'));
   if (selected.length === 0) return null;
 
   return (
@@ -49,6 +49,12 @@ export function SelectionChips() {
               alt={asset.meta?.prompt || 'selected asset'}
               className="h-full w-full object-cover"
             />
+          )}
+          {asset.type === 'audio' && (
+            <div className="flex h-full w-full flex-col items-center justify-center gap-1 text-muted-foreground">
+              <Music2 width={20} height={20} />
+              <span className="text-[9px]">{asset.meta?.durationSec ? `${asset.meta.durationSec.toFixed(1)}s` : '音频'}</span>
+            </div>
           )}
           {asset.type === 'text' && (
             <p className="line-clamp-3 text-xs text-foreground">

@@ -245,7 +245,7 @@ export function CanvasNodeToolbar() {
           <div className="w-64 space-y-1 rounded-md bg-muted/60 p-2 text-xs text-muted-foreground">
             {single.meta?.prompt && <p className="line-clamp-4"><span className="font-medium text-foreground">Prompt: </span>{single.meta.prompt}</p>}
             {single.meta?.model && <p><span className="font-medium text-foreground">Model: </span>{single.meta.model}</p>}
-            <p><span className="font-medium text-foreground">尺寸: </span>{Math.round(single.width)}×{Math.round(single.height)}{single.type === 'video' && single.meta?.durationSec ? ` · ${single.meta.durationSec}s` : ''}</p>
+            <p><span className="font-medium text-foreground">{single.type === 'audio' ? '音频' : '尺寸'}: </span>{single.type === 'audio' ? (single.meta?.durationSec ? `${single.meta.durationSec.toFixed(1)}s` : '时长未知') : `${Math.round(single.width)}×${Math.round(single.height)}${single.type === 'video' && single.meta?.durationSec ? ` · ${single.meta.durationSec}s` : ''}`}</p>
           </div>
         )}
 
@@ -295,6 +295,14 @@ export function CanvasNodeToolbar() {
               controls
               autoPlay
               className="max-h-full max-w-full"
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : fullscreenAsset.type === 'audio' ? (
+            <audio
+              src={`/api/canvases/${fullscreenAsset.canvasId}/asset/${fullscreenAsset.relPath}`}
+              controls
+              autoPlay
+              className="w-full max-w-2xl"
               onClick={(e) => e.stopPropagation()}
             />
           ) : (

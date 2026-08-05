@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { buildWorkerEnv, serializeCustomHeaders } from '../../src/server/models/build-worker-env.js';
+import { buildMediaGenEnv, buildWorkerEnv, serializeCustomHeaders } from '../../src/server/models/build-worker-env.js';
 
 const baseMeta = {
   baseUrl: 'https://ark.cn-beijing.volces.com/api/coding',
@@ -66,5 +66,51 @@ describe('buildWorkerEnv', () => {
 
   it('serializeCustomHeaders joins Name: Value by newline', () => {
     expect(serializeCustomHeaders({ a: '1', b: '2' })).toBe('a: 1\nb: 2');
+  });
+});
+
+describe('buildMediaGenEnv', () => {
+  it('injects a provider-neutral image route for any installed adapter', () => {
+    const env = buildMediaGenEnv(
+      {
+        id: 'provider/image-v1',
+        baseUrl: 'https://media.example.com',
+        authStyle: 'bearer',
+        protocol: 'custom',
+        tokenEnv: 'MEDIA_KEY',
+        model: 'image-v1',
+        mediaAdapter: 'example-image',
+        mediaConfig: { quality: 'high' },
+        customHeaders: { 'x-tenant': 'kin' },
+        enabled: true,
+      },
+      { MEDIA_KEY: 'secret', PATH: '/usr/bin' },
+      'image',
+    );
+    expect(env.KIN_MEDIA_IMAGE_ADAPTER).toBe('example-image');
+    expect(env.KIN_MEDIA_IMAGE_MODEL).toBe('image-v1');
+    expect(env.KIN_MEDIA_IMAGE_API_KEY).toBe('secret');
+    expect(JSON.parse(env.KIN_MEDIA_IMAGE_CONFIG)).toEqual({ quality: 'high' });
+    expect(JSON.parse(env.KIN_MEDIA_IMAGE_HEADERS)).toEqual({ 'x-tenant': 'kin' });
+    expect(env.PATH).toBe('/usr/bin');
+  });
+
+  it('keeps legacy Gemini variables while also injecting the generic route', () => {
+    const env = buildMediaGenEnv(
+      {
+        id: 'google/veo',
+        baseUrl: 'https://generativelanguage.googleapis.com',
+        authStyle: 'x-api-key',
+        protocol: 'gemini',
+        tokenEnv: 'GOOGLE_KEY',
+        model: 'veo-next',
+        enabled: true,
+      },
+      { GOOGLE_KEY: 'g-key' },
+      'video',
+    );
+    expect(env.KIN_MEDIA_VIDEO_ADAPTER).toBe('google-veo');
+    expect(env.GEMINI_VIDEO_MODEL).toBe('veo-next');
+    expect(env.GEMINI_API_KEY).toBe('g-key');
   });
 });

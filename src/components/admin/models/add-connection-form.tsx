@@ -11,6 +11,7 @@ import { Badge } from '~/components/ui/badge';
 import { Input } from '~/components/ui/input';
 import type { CatalogProvider } from '~/server/models/provider-catalog';
 import type { ModelCapability } from '~/server/models/registry';
+import type { ModelMediaConfig } from '~/db/schema/model.schema';
 import { CAPABILITY_LABELS } from './defaults-panel';
 
 export type AddConnectionSubmit = {
@@ -23,7 +24,14 @@ export type AddConnectionSubmit = {
     aliasHaiku?: string | null;
   };
   credential: string | null;
-  models: Array<{ id: string; label: string; model: string; capabilities: ModelCapability[] }>;
+  models: Array<{
+    id: string;
+    label: string;
+    model: string;
+    capabilities: ModelCapability[];
+    mediaAdapter?: string | null;
+    mediaConfig?: ModelMediaConfig;
+  }>;
 };
 
 type Props = {
@@ -87,6 +95,8 @@ export function AddConnectionForm({ catalog, secretKeyConfigured, busy, onSubmit
               label: m.label,
               model: m.model,
               capabilities: m.capabilities,
+              mediaAdapter: m.mediaAdapter,
+              mediaConfig: m.mediaConfig,
             })),
         });
       }}
@@ -126,7 +136,6 @@ export function AddConnectionForm({ catalog, secretKeyConfigured, busy, onSubmit
             placeholder="Base URL"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
-            disabled={provider.baseUrl !== null}
           />
           <Input
             type="password"

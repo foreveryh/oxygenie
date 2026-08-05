@@ -58,7 +58,19 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function submitVeoJob({ prompt, imageBase64, imageMimeType, aspectRatio, durationSeconds, resolution, model, baseUrl, apiKey }) {
+async function submitVeoJob({
+  prompt,
+  imageBase64,
+  imageMimeType,
+  aspectRatio,
+  durationSeconds,
+  resolution,
+  model,
+  baseUrl,
+  apiKey,
+  customHeaders = {},
+  providerConfig = {},
+}) {
   const endpoint = `${baseUrl}/v1beta/models/${model}:predictLongRunning`;
   const instance = { prompt };
   if (imageBase64) {
@@ -73,10 +85,12 @@ async function submitVeoJob({ prompt, imageBase64, imageMimeType, aspectRatio, d
     headers: {
       'Content-Type': 'application/json',
       'x-goog-api-key': apiKey,
+      ...customHeaders,
     },
     body: JSON.stringify({
       instances: [instance],
       parameters: {
+        ...providerConfig,
         aspectRatio,
         // Live-verified 2026-07-06: the real API wants a number here, not a string —
         // some docs/summaries show it quoted (`"durationSeconds": "4|6|8"`), that's wrong.
@@ -96,12 +110,12 @@ async function submitVeoJob({ prompt, imageBase64, imageMimeType, aspectRatio, d
   return body.name;
 }
 
-async function pollVeoJob({ operationName, baseUrl, apiKey }) {
+async function pollVeoJob({ operationName, baseUrl, apiKey, customHeaders = {} }) {
   const endpoint = `${baseUrl}/v1beta/${operationName}`;
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await sleep(POLL_INTERVAL_MS);
-    const response = await fetch(endpoint, { headers: { 'x-goog-api-key': apiKey } });
+    const response = await fetch(endpoint, { headers: { 'x-goog-api-key': apiKey, ...customHeaders } });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`Veo poll failed: ${response.status} ${response.statusText}\n${text}`);
@@ -142,8 +156,8 @@ function extractVideoUris(opResponse) {
   return uris;
 }
 
-async function downloadVideo(uri, apiKey) {
-  const response = await fetch(uri, { headers: { 'x-goog-api-key': apiKey } });
+async function downloadVideo(uri, apiKey, customHeaders = {}) {
+  const response = await fetch(uri, { headers: { 'x-goog-api-key': apiKey, ...customHeaders } });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`Veo video download failed: ${response.status} ${response.statusText}\n${text}`);
@@ -172,9 +186,13 @@ export async function generateVideo({
   resolution = '720p',
   outputDir,
   model,
+  baseUrl: baseUrlOverride,
+  apiKey: apiKeyOverride,
+  customHeaders,
+  providerConfig,
 }) {
   const resolvedModel = model || process.env.GEMINI_VIDEO_MODEL || DEFAULT_MODEL;
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = apiKeyOverride || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY environment variable is required');
   }
@@ -184,7 +202,7 @@ export async function generateVideo({
   const aspectRatio = SUPPORTED_ASPECTS.has(aspect) ? aspect : '16:9';
   const duration = SUPPORTED_DURATIONS.has(durationSeconds) ? durationSeconds : 8;
   const resolvedResolution = SUPPORTED_RESOLUTIONS.has(resolution) ? resolution : '720p';
-  const baseUrl = process.env.GEMINI_BASE_URL || DEFAULT_BASE_URL;
+  const baseUrl = baseUrlOverride || process.env.GEMINI_BASE_URL || DEFAULT_BASE_URL;
 
   let imageBase64;
   let imageMimeType;
@@ -206,8 +224,10 @@ export async function generateVideo({
     model: resolvedModel,
     baseUrl,
     apiKey,
+    customHeaders,
+    providerConfig,
   });
-  const opResponse = await pollVeoJob({ operationName, baseUrl, apiKey });
+  const opResponse = await pollVeoJob({ operationName, baseUrl, apiKey, customHeaders });
   const uris = extractVideoUris(opResponse);
 
   await fs.mkdir(outputDir, { recursive: true });
@@ -215,7 +235,7 @@ export async function generateVideo({
 
   const files = [];
   for (const uri of uris) {
-    const buffer = await downloadVideo(uri, apiKey);
+    const buffer = await downloadVideo(uri, apiKey, customHeaders);
     const id = crypto.randomUUID();
     const relPath = `${id}.mp4`;
     await fs.writeFile(path.join(outputDir, relPath), buffer);

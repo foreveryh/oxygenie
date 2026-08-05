@@ -2243,6 +2243,7 @@ async function handleChat(ws, prompt, resumeSessionId, options = {}) {
                     canvasId: effectiveCanvasId,
                     sessionId: outputSessionId,
                     kind: msg.kind || 't2i',
+                    modelSlug: msg.modelSlug || null,
                     params: msg.input || {},
                   }),
                 });

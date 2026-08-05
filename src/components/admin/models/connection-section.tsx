@@ -13,6 +13,7 @@ import { Badge } from '~/components/ui/badge';
 import { Switch } from '~/components/ui/switch';
 import { Input } from '~/components/ui/input';
 import type { AdminConnectionRow, AdminModelRow, ModelCapability } from '~/server/models/registry';
+import type { ModelMediaConfig } from '~/db/schema/model.schema';
 import { CAPABILITY_LABELS, CAPABILITIES } from './defaults-panel';
 
 const HEALTH_STYLE: Record<AdminModelRow['health'], string> = {
@@ -40,7 +41,15 @@ type Props = {
   onToggleModel: (id: string, enabled: boolean) => void;
   onReprobe: (modelId: string) => void;
   onDeleteModel: (id: string) => void;
-  onAddModel: (m: { id: string; label: string; connectionId: string; model: string; capabilities: ModelCapability[] }) => void;
+  onAddModel: (m: {
+    id: string;
+    label: string;
+    connectionId: string;
+    model: string;
+    capabilities: ModelCapability[];
+    mediaAdapter?: string | null;
+    mediaConfig?: ModelMediaConfig;
+  }) => void;
 };
 
 export function ConnectionSection({
@@ -50,7 +59,13 @@ export function ConnectionSection({
   const [credInput, setCredInput] = useState('');
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [showAdd, setShowAdd] = useState(false);
-  const [mForm, setMForm] = useState({ model: '', label: '', caps: new Set<ModelCapability>(['chat'] as ModelCapability[]) });
+  const [mForm, setMForm] = useState({
+    model: '',
+    label: '',
+    caps: new Set<ModelCapability>(conn.protocol === 'anthropic' ? ['chat'] : []),
+    mediaAdapter: '',
+    mediaConfig: '{}',
+  });
 
   const credBadge =
     conn.credentialSource === 'db' ? (
@@ -126,6 +141,7 @@ export function ConnectionSection({
                 <span className="text-sm font-medium">{m.label}</span>
                 {m.isDefault && <Badge className="gap-1"><Star className="h-3 w-3" />默认</Badge>}
                 {m.capabilities.map((c) => <Badge key={c} variant="secondary">{CAPABILITY_LABELS[c]}</Badge>)}
+                {m.mediaAdapter && <Badge variant="outline">adapter:{m.mediaAdapter}</Badge>}
                 {m.tags.map((t) => <Badge key={t} variant="outline">{t}</Badge>)}
               </div>
               <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">{m.id} · {m.model}</div>
@@ -162,19 +178,52 @@ export function ConnectionSection({
               onSubmit={(e) => {
                 e.preventDefault();
                 if (!mForm.model.trim()) return;
+                if (mForm.caps.size === 0) {
+                  alert('请至少选择一个模型能力');
+                  return;
+                }
+                let mediaConfig: ModelMediaConfig = {};
+                try {
+                  const parsed = JSON.parse(mForm.mediaConfig || '{}');
+                  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('必须是 JSON 对象');
+                  mediaConfig = parsed as ModelMediaConfig;
+                } catch (error) {
+                  alert(`Adapter 配置无效：${error instanceof Error ? error.message : String(error)}`);
+                  return;
+                }
                 onAddModel({
                   id: `${conn.id}/${mForm.model.trim()}`,
                   label: mForm.label.trim() || mForm.model.trim(),
                   connectionId: conn.id,
                   model: mForm.model.trim(),
                   capabilities: [...mForm.caps],
+                  mediaAdapter: mForm.mediaAdapter.trim() || null,
+                  mediaConfig,
                 });
-                setMForm({ model: '', label: '', caps: new Set<ModelCapability>(['chat'] as ModelCapability[]) });
+                setMForm({
+                  model: '',
+                  label: '',
+                  caps: new Set<ModelCapability>(conn.protocol === 'anthropic' ? ['chat'] : []),
+                  mediaAdapter: '',
+                  mediaConfig: '{}',
+                });
                 setShowAdd(false);
               }}
             >
               <Input required className="h-8 w-44 text-xs" placeholder="模型串（服务商认的）" value={mForm.model} onChange={(e) => setMForm({ ...mForm, model: e.target.value })} />
               <Input className="h-8 w-36 text-xs" placeholder="显示名（可选）" value={mForm.label} onChange={(e) => setMForm({ ...mForm, label: e.target.value })} />
+              <Input
+                className="h-8 w-40 text-xs"
+                placeholder="Media adapter（如 google-veo）"
+                value={mForm.mediaAdapter}
+                onChange={(e) => setMForm({ ...mForm, mediaAdapter: e.target.value })}
+              />
+              <Input
+                className="h-8 w-44 font-mono text-xs"
+                placeholder='Adapter JSON（默认 {}）'
+                value={mForm.mediaConfig}
+                onChange={(e) => setMForm({ ...mForm, mediaConfig: e.target.value })}
+              />
               {CAPABILITIES.map((c) => (
                 <label key={c} className="flex items-center gap-1 text-xs">
                   <input

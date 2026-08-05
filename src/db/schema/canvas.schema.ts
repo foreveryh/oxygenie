@@ -42,7 +42,7 @@ export const canvasAsset = pgTable('canvas_asset', {
   canvasId: uuid('canvas_id')
     .notNull()
     .references(() => canvasWorkspace.id, { onDelete: 'cascade' }),
-  type: text('type', { enum: ['image', 'video', 'text'] }).notNull(),
+  type: text('type', { enum: ['image', 'video', 'audio', 'text'] }).notNull(),
   relPath: text('rel_path'),
   meta: jsonb('meta').$type<CanvasAssetMeta>().default({}),
   posX: real('pos_x').notNull(),
@@ -64,6 +64,24 @@ export type GenerationTaskParams = {
   count?: number;
   aspect?: string;
   resolution?: string;
+  durationSec?: number;
+  mode?: 'text_to_video' | 'first_last_frame' | 'reference' | 'video_edit';
+  references?: GenerationTaskReference[];
+};
+
+export type GenerationReferenceRole =
+  | 'first_frame'
+  | 'last_frame'
+  | 'reference_image'
+  | 'reference_video'
+  | 'reference_audio'
+  | 'edit_source';
+
+export type GenerationTaskReference = {
+  assetId: string;
+  mediaType: 'image' | 'video' | 'audio';
+  role: GenerationReferenceRole;
+  order: number;
   durationSec?: number;
 };
 

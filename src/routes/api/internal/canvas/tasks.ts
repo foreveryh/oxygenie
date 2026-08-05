@@ -12,7 +12,7 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { eq } from 'drizzle-orm';
 import { db } from '~/db/db-config';
-import { canvasWorkspace } from '~/db/schema';
+import { canvasWorkspace, type GenerationTaskParams } from '~/db/schema';
 import { requireUser } from '~/server/require-user';
 import { createGenerationTask } from '~/server/canvas/task-orchestration';
 
@@ -22,11 +22,12 @@ export const Route = createFileRoute('/api/internal/canvas/tasks')({
       POST: async ({ request }) => {
         const user = await requireUser(request);
         const body = await request.json();
-        const { canvasId, sessionId, kind, params } = body as {
+        const { canvasId, sessionId, kind, modelSlug, params } = body as {
           canvasId: string;
           sessionId?: string;
           kind: 't2i' | 'i2i' | 't2v' | 'i2v' | 'v2v';
-          params?: { prompt?: string; count?: number; aspect?: string; resolution?: string; durationSec?: number };
+          modelSlug?: string | null;
+          params?: GenerationTaskParams;
         };
 
         if (!canvasId || !kind) {
@@ -49,6 +50,7 @@ export const Route = createFileRoute('/api/internal/canvas/tasks')({
           sessionId,
           origin: 'agent',
           kind,
+          modelSlug,
           params,
         });
 

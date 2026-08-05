@@ -19,11 +19,13 @@ import {
   modelHealth,
   MODEL_CAPABILITIES,
   type ModelCapability,
+  type ModelMediaConfig,
   type ModelProtocol,
 } from '~/db/schema/model.schema';
 import { project } from '~/db/schema/project.schema';
 import { sealSecret, openSecret, maskSecret } from '~/server/security/secret-box';
 import { parseModelSeed, type AuthStyle, type ModelSeedConfig } from './model-config';
+import { getMediaAdapter, inferMediaAdapter } from '~/claude/media-gen/adapter-registry';
 
 export { MODEL_CAPABILITIES, type ModelCapability, type ModelProtocol };
 
@@ -35,10 +37,13 @@ export { MODEL_CAPABILITIES, type ModelCapability, type ModelProtocol };
 export type ModelRouteMeta = {
   id: string;
   model: string;
+  capabilities: ModelCapability[];
   connectionId: string;
   baseUrl: string;
   authStyle: AuthStyle;
   protocol: ModelProtocol;
+  mediaAdapter: string | null;
+  mediaConfig: ModelMediaConfig;
   credentialEncrypted: string | null;
   tokenEnv: string | null;
   anthropicVersion: string;
@@ -193,11 +198,14 @@ export async function resolveModelMeta(id: string): Promise<ModelRouteMeta | nul
     .select({
       id: modelDefinition.id,
       model: modelDefinition.model,
+      capabilities: modelDefinition.capabilities,
       enabled: modelDefinition.enabled,
       connectionId: modelConnection.id,
       baseUrl: modelConnection.baseUrl,
       authStyle: modelConnection.authStyle,
       protocol: modelConnection.protocol,
+      mediaAdapter: modelDefinition.mediaAdapter,
+      mediaConfig: modelDefinition.mediaConfig,
       credentialEncrypted: modelConnection.credentialEncrypted,
       tokenEnv: modelConnection.tokenEnv,
       anthropicVersion: modelConnection.anthropicVersion,
@@ -305,7 +313,13 @@ export async function setDefaultModelFor(
   }
 
   const [model] = await db
-    .select({ id: modelDefinition.id, capabilities: modelDefinition.capabilities, protocol: modelConnection.protocol })
+    .select({
+      id: modelDefinition.id,
+      model: modelDefinition.model,
+      capabilities: modelDefinition.capabilities,
+      protocol: modelConnection.protocol,
+      mediaAdapter: modelDefinition.mediaAdapter,
+    })
     .from(modelDefinition)
     .innerJoin(modelConnection, eq(modelDefinition.connectionId, modelConnection.id))
     .where(eq(modelDefinition.id, modelId))
@@ -317,6 +331,13 @@ export async function setDefaultModelFor(
   // Hard constraint: the Agent runtime only speaks the Anthropic protocol.
   if (capability === 'chat' && model.protocol !== 'anthropic') {
     throw new Error('对话（Agent）默认模型必须来自 Anthropic 兼容协议的连接');
+  }
+  if (capability === 'image' || capability === 'video') {
+    const adapterId = inferMediaAdapter(
+      { id: model.id, model: model.model, protocol: model.protocol, adapter: model.mediaAdapter },
+      capability,
+    );
+    getMediaAdapter(adapterId);
   }
 
   await db.delete(modelDefault).where(scope);
@@ -363,6 +384,8 @@ export type AdminModelRow = {
   label: string;
   model: string;
   capabilities: ModelCapability[];
+  mediaAdapter: string | null;
+  mediaConfig: ModelMediaConfig;
   tags: string[];
   enabled: boolean;
   isDefault: boolean;
@@ -441,6 +464,8 @@ export async function listModelsAdmin(): Promise<AdminModelRow[]> {
       label: modelDefinition.label,
       model: modelDefinition.model,
       capabilities: modelDefinition.capabilities,
+      mediaAdapter: modelDefinition.mediaAdapter,
+      mediaConfig: modelDefinition.mediaConfig,
       tags: modelDefinition.tags,
       enabled: modelDefinition.enabled,
       isDefault: modelDefinition.isDefault,
@@ -507,6 +532,8 @@ export type ModelInput = {
   connectionId: string;
   model: string;
   capabilities?: ModelCapability[];
+  mediaAdapter?: string | null;
+  mediaConfig?: ModelMediaConfig;
   tags?: string[];
   enabled?: boolean;
 };
@@ -586,6 +613,8 @@ export async function upsertModel(m: ModelInput): Promise<void> {
     connectionId: m.connectionId,
     model: m.model,
     capabilities: m.capabilities?.length ? m.capabilities : (['chat'] as ModelCapability[]),
+    mediaAdapter: m.mediaAdapter?.trim() || null,
+    mediaConfig: m.mediaConfig ?? {},
     tags: m.tags ?? [],
     enabled: m.enabled ?? true,
   };

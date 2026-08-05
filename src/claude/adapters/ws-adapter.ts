@@ -321,7 +321,7 @@ function classifyAttachment(attachment: AttachmentDescriptor): AttachmentHint {
  * product's observed behavior (select text node → ask about it → Agent recites it). */
 export type CanvasRefDescriptor = {
   relPath: string;
-  type: 'image' | 'video' | 'text';
+  type: 'image' | 'video' | 'audio' | 'text';
   width?: number;
   height?: number;
   durationSec?: number;
@@ -339,7 +339,7 @@ function extractRunConfigCanvasRefs(runConfig?: ChatModelRunOptions['runConfig']
       if (!item || typeof item !== 'object') return null;
       const candidate = item as Partial<CanvasRefDescriptor>;
       if (typeof candidate.relPath !== 'string' || !candidate.relPath.trim()) return null;
-      if (candidate.type !== 'image' && candidate.type !== 'video' && candidate.type !== 'text') return null;
+      if (candidate.type !== 'image' && candidate.type !== 'video' && candidate.type !== 'audio' && candidate.type !== 'text') return null;
       // Omit (not just `undefined`-set) keys so the inferred literal type actually
       // matches CanvasRefDescriptor's optional fields for the type predicate below.
       return {

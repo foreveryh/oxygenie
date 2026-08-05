@@ -13,12 +13,14 @@
  * entries below must not suggest 'chat' models on non-anthropic protocols.
  */
 
-import type { ModelCapability, ModelProtocol } from '~/db/schema/model.schema';
+import type { ModelCapability, ModelMediaConfig, ModelProtocol } from '~/db/schema/model.schema';
 
 export type CatalogModel = {
   model: string;
   label: string;
   capabilities: ModelCapability[];
+  mediaAdapter?: string | null;
+  mediaConfig?: ModelMediaConfig;
 };
 
 export type CatalogProvider = {
@@ -114,10 +116,64 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     authStyle: 'bearer',
     keyUrl: 'https://aistudio.google.com/apikey',
     knownModels: [
-      { model: 'imagen-3.0-generate-002', label: 'Imagen 3（生图）', capabilities: ['image'] },
-      { model: 'veo-3.0-generate-preview', label: 'Veo 3（生视频）', capabilities: ['video'] },
+      { model: 'imagen-3.0-generate-002', label: 'Imagen 3（生图）', capabilities: ['image'], mediaAdapter: 'google-imagen' },
+      { model: 'veo-3.0-generate-preview', label: 'Veo 3（生视频）', capabilities: ['video'], mediaAdapter: 'google-veo' },
       { model: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash（识图）', capabilities: ['vision'] },
       { model: 'text-embedding-004', label: 'Text Embedding 004（向量）', capabilities: ['embedding'] },
+    ],
+  },
+  {
+    slug: 'minimax',
+    label: 'MiniMax（海螺视频）',
+    protocol: 'custom',
+    baseUrl: 'https://api.minimax.io',
+    authStyle: 'bearer',
+    keyUrl: 'https://platform.minimax.io/user-center/basic-information/interface-key',
+    note: '使用 MiniMax 异步视频 API。若使用中转站，直接改 Base URL；路径、轮询和附加参数可在模型的 Media config JSON 中覆盖。',
+    knownModels: [
+      { model: 'MiniMax-Hailuo-2.3', label: 'Hailuo 2.3（生视频）', capabilities: ['video'], mediaAdapter: 'minimax-video' },
+      { model: 'MiniMax-Hailuo-2.3-Fast', label: 'Hailuo 2.3 Fast（生视频）', capabilities: ['video'], mediaAdapter: 'minimax-video' },
+      {
+        model: 'MiniMax-H3', label: 'MiniMax H3（V2 · 2K / 4–15 秒）', capabilities: ['video'], mediaAdapter: 'minimax-h3-video',
+        mediaConfig: { capabilities: { video: { aspects: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'], durationSeconds: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolutions: ['768p', '2k'], firstFrame: true, lastFrame: true, aspectFromFirstFrame: true } } },
+      },
+      {
+        model: 'MiniMax-Hailuo-02', label: 'Hailuo 02（首尾帧生视频）', capabilities: ['video'], mediaAdapter: 'minimax-video',
+        mediaConfig: { capabilities: { video: { aspects: ['16:9', '9:16'], durationSeconds: [6, 10], resolutions: ['1080p'], firstFrame: true, lastFrame: true } } },
+      },
+    ],
+  },
+  {
+    slug: 'seedance',
+    label: 'Seedance 2（视频 · 官方/中转站）',
+    protocol: 'custom',
+    baseUrl: null,
+    authStyle: 'bearer',
+    note: 'Seedance 的售卖网关不止一种，故不预置可能失效的官方地址。填服务商 Base URL；默认兼容 /v1/videos/generations + /v1/tasks/{taskId}，其他路径/响应字段在 Media config JSON 覆盖。',
+    knownModels: [
+      {
+        model: 'seedance-2.0', label: 'Seedance 2.0（4–15 秒）', capabilities: ['video'], mediaAdapter: 'seedance-video',
+        mediaConfig: { capabilities: { video: { aspects: ['16:9', '9:16'], durationSeconds: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolutions: ['480p', '720p', '1080p'], firstFrame: true, lastFrame: false } } },
+      },
+      {
+        model: 'seedance-2.5', label: 'Seedance 2.5（最长 30 秒）', capabilities: ['video'], mediaAdapter: 'seedance-video',
+        mediaConfig: { capabilities: { video: { aspects: ['16:9', '9:16'], durationSeconds: [5, 10, 15, 30], resolutions: ['720p', '1080p'], firstFrame: true, lastFrame: false } } },
+      },
+    ],
+  },
+  {
+    slug: 'xai-imagine',
+    label: 'xAI Grok Imagine（视频 · 官方/中转站）',
+    protocol: 'custom',
+    baseUrl: 'https://api.x.ai',
+    authStyle: 'bearer',
+    keyUrl: 'https://console.x.ai',
+    note: '默认使用 xAI /v1/videos/generations + /v1/videos/{requestId}；中转站可替换 Base URL，并通过 Media config 覆盖路径和响应字段。',
+    knownModels: [
+      {
+        model: 'grok-imagine-video-1.5', label: 'Grok Imagine Video 1.5（1–15 秒）', capabilities: ['video'], mediaAdapter: 'grok-imagine-video',
+        mediaConfig: { capabilities: { video: { aspects: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3'], durationSeconds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], resolutions: ['480p', '720p', '1080p'], firstFrame: true, lastFrame: false } } },
+      },
     ],
   },
   {
@@ -152,6 +208,15 @@ export const PROVIDER_CATALOG: CatalogProvider[] = [
     protocol: 'openai-compat',
     baseUrl: null,
     authStyle: 'bearer',
+    knownModels: [],
+  },
+  {
+    slug: 'custom-media',
+    label: '自定义媒体服务（由 Media Adapter 驱动）',
+    protocol: 'custom',
+    baseUrl: null,
+    authStyle: 'bearer',
+    note: '先安装对应 media adapter，再添加模型并填写 adapter ID；端点路径和异步任务协议由 adapter 处理。',
     knownModels: [],
   },
 ];
